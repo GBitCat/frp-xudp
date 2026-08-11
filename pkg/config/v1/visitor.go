@@ -76,12 +76,14 @@ const (
 	VisitorTypeSTCP VisitorType = "stcp"
 	VisitorTypeXTCP VisitorType = "xtcp"
 	VisitorTypeSUDP VisitorType = "sudp"
+	VisitorTypeXUDP VisitorType = "xudp"
 )
 
 var visitorConfigTypeMap = map[VisitorType]reflect.Type{
 	VisitorTypeSTCP: reflect.TypeFor[STCPVisitorConfig](),
 	VisitorTypeXTCP: reflect.TypeFor[XTCPVisitorConfig](),
 	VisitorTypeSUDP: reflect.TypeFor[SUDPVisitorConfig](),
+	VisitorTypeXUDP: reflect.TypeFor[XUDPVisitorConfig](),
 }
 
 type TypedVisitorConfig struct {
@@ -164,6 +166,30 @@ func (c *XTCPVisitorConfig) Complete() {
 }
 
 func (c *XTCPVisitorConfig) Clone() VisitorConfigurer {
+	out := *c
+	out.VisitorBaseConfig = c.VisitorBaseConfig.Clone()
+	out.NatTraversal = c.NatTraversal.Clone()
+	return &out
+}
+
+var _ VisitorConfigurer = &XUDPVisitorConfig{}
+
+type XUDPVisitorConfig struct {
+	VisitorBaseConfig
+
+	FallbackTo        string `json:"fallbackTo,omitempty"`
+	FallbackTimeoutMs int    `json:"fallbackTimeoutMs,omitempty"`
+
+	NatTraversal *NatTraversalConfig `json:"natTraversal,omitempty"`
+}
+
+func (c *XUDPVisitorConfig) Complete() {
+	c.VisitorBaseConfig.Complete()
+
+	c.FallbackTimeoutMs = util.EmptyOr(c.FallbackTimeoutMs, 1000)
+}
+
+func (c *XUDPVisitorConfig) Clone() VisitorConfigurer {
 	out := *c
 	out.VisitorBaseConfig = c.VisitorBaseConfig.Clone()
 	out.NatTraversal = c.NatTraversal.Clone()

@@ -329,7 +329,7 @@ func (pxy *BaseProxy) handleUserTCPConnection(userConn net.Conn) {
 func (pxy *BaseProxy) joinUserConnection(local io.ReadWriteCloser, userConn net.Conn, proxyType string, xl *xlog.Logger) (int64, int64, []error) {
 	visitorWireProtocol := wireProtocolFromConn(userConn)
 	visitorUDPPacketCodec := udpPacketCodecFromConn(userConn)
-	if proxyType == string(v1.ProxyTypeSUDP) {
+	if proxyType == string(v1.ProxyTypeSUDP) || proxyType == string(v1.ProxyTypeXUDP) {
 		mixed, err := isMixedSUDPPacketEncoding(pxy.wireProtocol, pxy.udpPacketCodec, visitorWireProtocol, visitorUDPPacketCodec)
 		if err != nil {
 			return 0, 0, []error{err}

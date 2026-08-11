@@ -236,6 +236,7 @@ const (
 	ProxyTypeSTCP   ProxyType = "stcp"
 	ProxyTypeXTCP   ProxyType = "xtcp"
 	ProxyTypeSUDP   ProxyType = "sudp"
+	ProxyTypeXUDP   ProxyType = "xudp"
 )
 
 var proxyConfigTypeMap = map[ProxyType]reflect.Type{
@@ -247,6 +248,7 @@ var proxyConfigTypeMap = map[ProxyType]reflect.Type{
 	ProxyTypeSTCP:   reflect.TypeFor[STCPProxyConfig](),
 	ProxyTypeXTCP:   reflect.TypeFor[XTCPProxyConfig](),
 	ProxyTypeSUDP:   reflect.TypeFor[SUDPProxyConfig](),
+	ProxyTypeXUDP:   reflect.TypeFor[XUDPProxyConfig](),
 }
 
 func NewProxyConfigurerByType(proxyType ProxyType) ProxyConfigurer {
@@ -530,5 +532,38 @@ func (c *SUDPProxyConfig) Clone() ProxyConfigurer {
 	out := *c
 	out.ProxyBaseConfig = c.ProxyBaseConfig.Clone()
 	out.AllowUsers = slices.Clone(c.AllowUsers)
+	return &out
+}
+
+var _ ProxyConfigurer = &XUDPProxyConfig{}
+
+type XUDPProxyConfig struct {
+	ProxyBaseConfig
+
+	Secretkey  string   `json:"secretKey,omitempty"`
+	AllowUsers []string `json:"allowUsers,omitempty"`
+
+	NatTraversal *NatTraversalConfig `json:"natTraversal,omitempty"`
+}
+
+func (c *XUDPProxyConfig) MarshalToMsg(m *msg.NewProxy) {
+	c.ProxyBaseConfig.MarshalToMsg(m)
+
+	m.Sk = c.Secretkey
+	m.AllowUsers = c.AllowUsers
+}
+
+func (c *XUDPProxyConfig) UnmarshalFromMsg(m *msg.NewProxy) {
+	c.ProxyBaseConfig.UnmarshalFromMsg(m)
+
+	c.Secretkey = m.Sk
+	c.AllowUsers = m.AllowUsers
+}
+
+func (c *XUDPProxyConfig) Clone() ProxyConfigurer {
+	out := *c
+	out.ProxyBaseConfig = c.ProxyBaseConfig.Clone()
+	out.AllowUsers = slices.Clone(c.AllowUsers)
+	out.NatTraversal = c.NatTraversal.Clone()
 	return &out
 }

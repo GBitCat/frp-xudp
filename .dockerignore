@@ -1,0 +1,4 @@
+.git
+*.tar
+*.tar.gz
+node_modules

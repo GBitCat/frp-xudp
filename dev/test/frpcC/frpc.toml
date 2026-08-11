@@ -1,0 +1,19 @@
+serverAddr = "frpsB"
+serverPort = 7000
+
+auth.method = "token"
+auth.token = "frp-test-token"
+
+natHoleStunServer = "stun.easyvoip.com:3478"
+
+log.to = "console"
+log.level = "debug"
+loginFailExit = false
+
+[[visitors]]
+name = "xudp-visitor"
+type = "xudp"
+serverName = "xudp-echo"
+secretKey = "xudp-secret"
+bindAddr = "0.0.0.0"
+bindPort = 9000
