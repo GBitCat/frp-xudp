@@ -118,7 +118,7 @@ func (pxy *XUDPProxy) InWorkConn(conn net.Conn, m *msg.StartWorkConn) {
 	default:
 		// V1: 1 byte message type, TypeNatHoleSid = '5'
 		peekBytes, err := bufReader.Peek(1)
-		if err == nil && peekBytes[0] == byte(msg.TypeNatHoleSid) {
+		if err == nil && peekBytes[0] == msg.TypeNatHoleSid {
 			isP2P = true
 		}
 	}
@@ -172,7 +172,7 @@ func (pxy *XUDPProxy) handleP2PWorkConn(conn net.Conn, _ *msg.StartWorkConn) {
 		ProxyName:     naming.AddUserPrefix(pxy.clientCfg.User, pxy.cfg.Name),
 		Sid:           natHoleSidMsg.Sid,
 		MappedAddrs:   prepareResult.Addrs,
-		AssistedAddrs:  prepareResult.AssistedAddrs,
+		AssistedAddrs: prepareResult.AssistedAddrs,
 	}
 
 	xl.Tracef("xudp nathole exchange info start")
@@ -361,6 +361,7 @@ func (pxy *XUDPProxy) handleRelayWorkConn(conn net.Conn, _ *msg.StartWorkConn) {
 		int(pxy.clientCfg.UDPPacketSize), pxy.cfg.Transport.ProxyProtocolVersion)
 }
 
-// Ensure io is imported even if unused in some build configurations
-var _ = io.EOF
-var _ = fmt.Sprintf
+var (
+	_ = io.EOF
+	_ = fmt.Sprintf
+)

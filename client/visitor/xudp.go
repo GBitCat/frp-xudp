@@ -34,13 +34,13 @@ type XUDPVisitor struct {
 
 	cfg *v1.XUDPVisitorConfig
 
-	mu       sync.Mutex
-	udpConn  *net.UDPConn
-	readCh   chan *msg.UDPPacket
-	sendCh   chan *msg.UDPPacket
-	closeCh  chan struct{}
-	cancel   func()
-	closed   bool
+	mu      sync.Mutex
+	udpConn *net.UDPConn
+	readCh  chan *msg.UDPPacket
+	sendCh  chan *msg.UDPPacket
+	closeCh chan struct{}
+	cancel  func()
+	closed  bool
 }
 
 func (sv *XUDPVisitor) Run() (err error) {
