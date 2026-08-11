@@ -67,7 +67,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
+          {
+            echo "# frp-xudp v${VERSION}"
+            echo ""
+            cat dev/RELEASE_NOTES.md
+          } > /tmp/release-notes.md
           gh release create "v${VERSION}" release/packages/* \
             --repo "${{ github.repository }}" \
-            --title "frp ${VERSION} (XUDP extension)" \
-            --notes "由 GitHub Actions 自动构建的 release 包，版本 ${VERSION}。包名与上游格式一致：frp_${VERSION}_<os>_<arch>.tar.gz（Windows 为 .zip），校验文件 frp_sha256_checksums.txt。"
+            --title "frp-xudp ${VERSION} — XUDP P2P UDP Proxy" \
+            --notes-file /tmp/release-notes.md
