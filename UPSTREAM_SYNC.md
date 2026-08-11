@@ -36,11 +36,13 @@ git checkout -b release/xudp
 cd frp-src
 
 # 1) 拉取上游最新 tag（如 v0.70.1，按需替换版本号）
-git fetch origin tag v0.70.1
+# 注意: 从 upstream remote 拉取，并映射为 upstream- 前缀，
+#       避免与本仓库同名发布 tag（v0.70.1）冲突
+git fetch upstream refs/tags/v0.70.1:refs/tags/upstream-v0.70.1
 
 # 2) 切到维护分支并合并
 git checkout release/xudp
-git merge v0.70.1
+git merge upstream-v0.70.1
 
 # 3) 解决冲突（冲突文件见第 5 节清单），确认后提交
 git add -A
@@ -62,9 +64,12 @@ git tag xudp-v0.70.1
 
 合并方式二选一：
 
-- `git merge v0.70.1`：保留上游提交历史，冲突解决一次即可；
-- `git rebase v0.70.1`：历史线性，但每次升级都要重放全部本地提交，
+- `git merge upstream-v0.70.1`：保留上游提交历史，冲突解决一次即可；
+- `git rebase upstream-v0.70.1`：历史线性，但每次升级都要重放全部本地提交，
   冲突可能反复出现。**建议用 merge。**
+
+> 版本号说明：本仓库的发布 tag 使用与上游一致的版本号（如 `v0.70.1`），
+> 上游 tag 统一映射为 `upstream-v0.70.1` 避免冲突。
 
 ## 5. 冲突与风险点清单
 

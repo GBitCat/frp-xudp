@@ -10,6 +10,9 @@ set -euo pipefail
 #   PROXY   git 拉取使用的代理（可选）。默认读取仓库根目录 .env
 #           （参考 .env.example），未配置则不使用代理。
 #
+# 说明: 从 `upstream` remote（fatedier/frp）拉取上游 tag，并映射为
+#       refs/tags/upstream-<tag>，避免与本仓库同名发布 tag（如 v0.70.1）冲突。
+#
 # 流程: fetch tag -> merge -> 冲突检查 -> (可选)容器内编译 -> 回归提示
 # 详见 UPSTREAM_SYNC.md。
 
@@ -59,25 +62,26 @@ echo "==> 目标 tag: $TAG"
 # 1) 拉取上游 tag
 if [ "$DRY" -eq 1 ]; then
   if [ -n "$PROXY" ]; then
-    saydry "git -c http.proxy=$PROXY fetch origin tag $TAG"
+    saydry "git -c http.proxy=$PROXY fetch upstream refs/tags/$TAG:refs/tags/upstream-$TAG"
   else
-    saydry "git fetch origin tag $TAG"
+    saydry "git fetch upstream refs/tags/$TAG:refs/tags/upstream-$TAG"
   fi
 else
-  say "拉取上游 tag $TAG"
+  say "从 upstream 拉取 tag $TAG"
   if [ -n "$PROXY" ]; then
-    git -c "http.proxy=$PROXY" -c "https.proxy=$PROXY" fetch origin tag "$TAG"
+    git -c "http.proxy=$PROXY" -c "https.proxy=$PROXY" fetch upstream \
+      "+refs/tags/$TAG:refs/tags/upstream-$TAG"
   else
-    git fetch origin tag "$TAG"
+    git fetch upstream "+refs/tags/$TAG:refs/tags/upstream-$TAG"
   fi
 fi
 
 # 2) 合并
 if [ "$DRY" -eq 1 ]; then
-  saydry "git merge $TAG"
+  saydry "git merge upstream-$TAG"
 else
-  say "合并 $TAG 到当前分支"
-  if ! git merge "$TAG"; then
+  say "合并 upstream-$TAG 到当前分支"
+  if ! git merge "upstream-$TAG"; then
     echo "!! 合并产生冲突，请按 UPSTREAM_SYNC.md 第 5 节解决：" >&2
     git status --short >&2
     exit 1
