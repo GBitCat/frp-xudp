@@ -31,13 +31,26 @@ Node.js 22.23.2、golangci-lint v2.11.4、make/git/build-essential 等。
 ```bash
 cd dev
 
-make pull-base     # 通过 127.0.0.1:8118 代理拉取 ubuntu:26.04 并导入 Docker
-make build         # 构建 frp-dev:ubuntu-26.04 镜像（自动 --network=host + 代理）
+make pull-base     # 拉取 ubuntu:26.04 并导入 Docker
+make build         # 构建 frp-dev:ubuntu-26.04 镜像
 make run           # 启动开发容器（挂载仓库根目录到 /workspace）
 ```
 
 进入容器后即可使用 frp 常规开发命令：`make frps` / `make frpc` /
 `make test` / `golangci-lint run` 等。
+
+## 代理配置（可选）
+
+默认不代理。如果所在网络需要代理才能访问外网，请在仓库根目录创建
+`.env`（参考 `.env.example`）或通过环境变量设置 `PROXY`：
+
+```bash
+# .env 内容示例（请替换为你的代理地址）
+PROXY=http://host:port
+```
+
+配置代理后，`scripts/` 下的脚本会自动读取；构建镜像时使用
+`--network=host` 以便容器内访问宿主机代理。
 
 ## 三容器测试
 

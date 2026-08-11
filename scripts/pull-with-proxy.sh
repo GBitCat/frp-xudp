@@ -1,15 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 通过 127.0.0.1:8118 代理拉取 Docker 镜像并导入本地 Docker。
+# 通过代理拉取 Docker 镜像并导入本地 Docker。
 #
 # 用法:
-#   PROXY=http://127.0.0.1:8118 ./scripts/pull-with-proxy.sh <image[:tag]> [输出文件名]
+#   ./scripts/pull-with-proxy.sh <image[:tag]> [输出文件名]
 #
-# 背景: 本机 Docker 守护进程没有配置代理（修改 /etc/docker/daemon.json 需要 root），
+# 代理配置（必需）:
+#   本脚本依赖代理工作，请通过环境变量 PROXY 或仓库根目录 .env
+#   （参考 .env.example）配置，例如:
+#     PROXY=http://host:port ./scripts/pull-with-proxy.sh ubuntu:26.04
+#
+# 背景: 本机 Docker 守护进程未配置代理（修改 /etc/docker/daemon.json 需要 root），
 #       所以这里用 crane 走代理把镜像拉成 tar 包，再 docker load 导入。
 
-PROXY="${PROXY:-http://127.0.0.1:8118}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# 读取 .env（如果存在）
+if [ -f "$ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
+
+PROXY="${PROXY:-}"
+if [ -z "$PROXY" ]; then
+  echo "!! 未配置代理：本脚本需要通过代理拉取镜像。" >&2
+  echo "   如需代理，请设置 PROXY 环境变量，或在仓库根目录 .env 中配置（参考 .env.example）。" >&2
+  exit 1
+fi
+
 IMAGE="${1:?用法: pull-with-proxy.sh <image[:tag]>}"
 
 case "$(uname -m)" in

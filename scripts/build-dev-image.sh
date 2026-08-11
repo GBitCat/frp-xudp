@@ -5,21 +5,38 @@ set -euo pipefail
 #
 # 用法:
 #   ./scripts/build-dev-image.sh [镜像名:tag]
-# 环境变量:
-#   PROXY: 构建与容器内下载使用的代理，默认 http://127.0.0.1:8118
 #
-# 注意: 必须使用 --network=host，否则容器内的 127.0.0.1 指向容器自己，
-#       无法访问宿主机的 8118 代理。
+# 代理配置（可选）:
+#   默认不代理。如需代理，通过环境变量 PROXY 或仓库根目录 .env
+#   （参考 .env.example）配置，例如:
+#     PROXY=http://host:port ./scripts/build-dev-image.sh
+#
+# 注意: 配置代理时，容器内下载需要访问宿主机代理，
+#       因此构建必须使用 --network=host。
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROXY="${PROXY:-http://127.0.0.1:8118}"
+
+# 读取 .env（如果存在）
+if [ -f "$ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
+
+PROXY="${PROXY:-}"
 TAG="${1:-frp-dev:ubuntu-26.04}"
+
+BUILD_ARGS=()
+if [ -n "$PROXY" ]; then
+  BUILD_ARGS+=(--build-arg "PROXY=${PROXY}")
+fi
 
 docker build \
   --network=host \
-  --build-arg "PROXY=${PROXY}" \
+  "${BUILD_ARGS[@]}" \
   -t "${TAG}" \
-  -f "${ROOT}/Dockerfile" \
-  "${ROOT}"
+  -f "$ROOT/Dockerfile" \
+  "$ROOT"
 
 echo "==> 构建完成: ${TAG}"

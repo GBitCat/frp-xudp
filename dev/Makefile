@@ -1,9 +1,9 @@
-PROXY ?= http://127.0.0.1:8118
+PROXY ?=
 IMAGE ?= frp-dev:ubuntu-26.04
 
 .PHONY: pull-base build run
 
-# 通过代理拉取基础镜像并导入 Docker（当前守护进程无代理配置，需 root 才能改）
+# 拉取基础镜像并导入 Docker。如需代理，请配置 PROXY（环境变量或仓库根目录 .env）
 pull-base:
 	../scripts/pull-with-proxy.sh ubuntu:26.04
 

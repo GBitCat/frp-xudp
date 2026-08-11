@@ -7,13 +7,15 @@
 #   - make / git / build-essential 等基础工具
 #
 # 构建时建议配合 scripts/build-dev-image.sh 使用：
-#   docker build --network=host --build-arg PROXY=http://127.0.0.1:8118 -t frp-dev:ubuntu-26.04 .
-# 容器内所有下载（apt / go / npm）都会走宿主机 127.0.0.1:8118 代理。
+#   docker build --network=host --build-arg PROXY=<proxy> -t frp-dev:ubuntu-26.04 .
+# 如需代理，通过 --build-arg PROXY=... 传入（默认不代理）。
+# 配置代理时，容器内所有下载（apt / go / npm）都会走该代理；
+# 且代理在宿主机上时，构建必须使用 --network=host。
 
 ARG BASE_IMAGE=ubuntu:26.04
 FROM ${BASE_IMAGE}
 
-ARG PROXY=http://127.0.0.1:8118
+ARG PROXY=
 ARG GO_VERSION=1.25.12
 ARG NODE_VERSION=22.23.2
 ARG GOLANGCI_LINT_VERSION=2.11.4

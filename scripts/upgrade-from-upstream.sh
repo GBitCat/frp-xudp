@@ -7,14 +7,24 @@ set -euo pipefail
 #   ./scripts/upgrade-from-upstream.sh <上游tag> [--build] [--dry-run]
 #
 # 环境变量:
-#   PROXY   git 拉取使用的代理，默认 http://127.0.0.1:8118
+#   PROXY   git 拉取使用的代理（可选）。默认读取仓库根目录 .env
+#           （参考 .env.example），未配置则不使用代理。
 #
 # 流程: fetch tag -> merge -> 冲突检查 -> (可选)容器内编译 -> 回归提示
 # 详见 UPSTREAM_SYNC.md。
 
-PROXY="${PROXY:-http://127.0.0.1:8118}"
-TAG="${1:?用法: upgrade-from-upstream.sh <tag> [--build] [--dry-run]}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# 读取 .env（如果存在）
+if [ -f "$REPO_ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$REPO_ROOT/.env"
+  set +a
+fi
+
+PROXY="${PROXY:-}"
+TAG="${1:?用法: upgrade-from-upstream.sh <tag> [--build] [--dry-run]}"
 
 BUILD=0
 DRY=0
@@ -48,10 +58,18 @@ echo "==> 目标 tag: $TAG"
 
 # 1) 拉取上游 tag
 if [ "$DRY" -eq 1 ]; then
-  saydry "git -c http.proxy=$PROXY fetch origin tag $TAG"
+  if [ -n "$PROXY" ]; then
+    saydry "git -c http.proxy=$PROXY fetch origin tag $TAG"
+  else
+    saydry "git fetch origin tag $TAG"
+  fi
 else
   say "拉取上游 tag $TAG"
-  git -c "http.proxy=$PROXY" -c "https.proxy=$PROXY" fetch origin tag "$TAG"
+  if [ -n "$PROXY" ]; then
+    git -c "http.proxy=$PROXY" -c "https.proxy=$PROXY" fetch origin tag "$TAG"
+  else
+    git fetch origin tag "$TAG"
+  fi
 fi
 
 # 2) 合并
