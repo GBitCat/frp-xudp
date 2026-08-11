@@ -20,6 +20,9 @@ jobs:
   image:
     name: Build frpc/frps images
     runs-on: ubuntu-latest
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -52,18 +55,18 @@ jobs:
 
       # Docker Hub 仅在配置了 secrets 时才登录/推送
       - name: Login to DockerHub
-        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_PASSWORD != '' }}
+        if: ${{ env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_PASSWORD != '' }}
         uses: docker/login-action@v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_PASSWORD }}
 
       - name: Prepare Image Tags
         run: |
           echo "PLATFORMS=${{ github.event.inputs.platforms }}" >> "$GITHUB_ENV"
           TAGS_FRPC="ghcr.io/${{ github.repository }}/frpc:${{ env.TAG_NAME }}"
           TAGS_FRPS="ghcr.io/${{ github.repository }}/frps:${{ env.TAG_NAME }}"
-          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_PASSWORD }}" ]; then
+          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_PASSWORD" ]; then
             TAGS_FRPC="$TAGS_FRPC,${{ github.repository_owner }}/frpc:${{ env.TAG_NAME }}"
             TAGS_FRPS="$TAGS_FRPS,${{ github.repository_owner }}/frps:${{ env.TAG_NAME }}"
           fi
