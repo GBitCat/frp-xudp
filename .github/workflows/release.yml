@@ -1,0 +1,73 @@
+name: Build Release Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '只构建不上传（true/false）'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: '0'
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Install zip
+        run: |
+          if ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq zip
+          fi
+
+      - name: Build release packages
+        run: |
+          GOFLAGS=-buildvcs=false ./package.sh
+
+      - name: Generate checksums
+        run: |
+          cd release/packages
+          sha256sum frp_*.tar.gz frp_*.zip > frp_sha256_checksums.txt
+          wc -l frp_sha256_checksums.txt
+
+      - name: Compute version
+        id: version
+        run: |
+          VERSION="$(./bin/frps --version)"
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "release version: $VERSION"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: frp-release-packages
+          path: release/packages/*
+          if-no-files-found: error
+
+      - name: Create GitHub release
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          gh release create "v${VERSION}" release/packages/* \
+            --repo "${{ github.repository }}" \
+            --title "frp ${VERSION} (XUDP extension)" \
+            --notes "由 GitHub Actions 自动构建的 release 包，版本 ${VERSION}。包名与上游格式一致：frp_${VERSION}_<os>_<arch>.tar.gz（Windows 为 .zip），校验文件 frp_sha256_checksums.txt。"
