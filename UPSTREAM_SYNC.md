@@ -28,6 +28,11 @@ git fetch --unshallow origin
 
 # 2) 建立自己的发布维护分支（建议长期使用）
 git checkout -b release/xudp
+
+# 3) 配置 README 合并策略（每台执行合并的机器只需做一次）
+#    本仓库自定义了 README.md（.gitattributes 已声明 merge=ours），
+#    启用下面的 driver 后，合并上游时自动保留我们的 README，不再产生冲突：
+git config merge.ours.driver true
 ```
 
 ## 4. 每次升级的标准流程
