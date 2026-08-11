@@ -64,11 +64,13 @@ jobs:
       - name: Prepare Image Tags
         run: |
           echo "PLATFORMS=${{ github.event.inputs.platforms }}" >> "$GITHUB_ENV"
-          TAGS_FRPC="ghcr.io/${{ github.repository }}/frpc:${{ env.TAG_NAME }}"
-          TAGS_FRPS="ghcr.io/${{ github.repository }}/frps:${{ env.TAG_NAME }}"
+          GHCR_REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          DOCKERHUB_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          TAGS_FRPC="ghcr.io/${GHCR_REPO}/frpc:${{ env.TAG_NAME }}"
+          TAGS_FRPS="ghcr.io/${GHCR_REPO}/frps:${{ env.TAG_NAME }}"
           if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_PASSWORD" ]; then
-            TAGS_FRPC="$TAGS_FRPC,${{ github.repository_owner }}/frpc:${{ env.TAG_NAME }}"
-            TAGS_FRPS="$TAGS_FRPS,${{ github.repository_owner }}/frps:${{ env.TAG_NAME }}"
+            TAGS_FRPC="$TAGS_FRPC,${DOCKERHUB_OWNER}/frpc:${{ env.TAG_NAME }}"
+            TAGS_FRPS="$TAGS_FRPS,${DOCKERHUB_OWNER}/frps:${{ env.TAG_NAME }}"
           fi
           echo "TAGS_FRPC=$TAGS_FRPC" >> "$GITHUB_ENV"
           echo "TAGS_FRPS=$TAGS_FRPS" >> "$GITHUB_ENV"
