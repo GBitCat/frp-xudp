@@ -15,6 +15,7 @@ type DatagramTransport interface {
 	ReceiveDatagram(context.Context) ([]byte, error)
 	MaxDatagramPayloadSize() int
 	ConnectionState() quic.ConnectionState
+	VerifyPeerFingerprint(string) error
 	Close() error
 	LocalAddr() net.Addr
 	RemoteAddr() net.Addr

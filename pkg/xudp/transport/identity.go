@@ -52,8 +52,11 @@ func ServerTLSConfig(id *Identity, expectedClientFingerprint string) (*tls.Confi
 		MinVersion:   tls.VersionTLS13,
 		NextProtos:   []string{"xudp"},
 		ClientAuth:   tls.RequireAnyClientCert,
-		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-			return verifyFingerprint(expectedClientFingerprint, rawCerts)
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return fmt.Errorf("missing client certificate")
+			}
+			return verifyFingerprint(expectedClientFingerprint, [][]byte{cs.PeerCertificates[0].Raw})
 		},
 	}, nil
 }
@@ -74,8 +77,11 @@ func ClientTLSConfig(id *Identity, expectedServerFingerprint string) (*tls.Confi
 		// fingerprint pin below. The pin comes from the authenticated FRP
 		// NAT-hole exchange, so this is not an unauthenticated TLS dial.
 		InsecureSkipVerify: true,
-		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-			return verifyFingerprint(expectedServerFingerprint, rawCerts)
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return fmt.Errorf("missing server certificate")
+			}
+			return verifyFingerprint(expectedServerFingerprint, [][]byte{cs.PeerCertificates[0].Raw})
 		},
 	}, nil
 }

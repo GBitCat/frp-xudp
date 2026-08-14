@@ -277,6 +277,11 @@ func (sv *XUDPVisitor) dialP2P(generation uint64) (xudptransport.DatagramTranspo
 		xl.Warnf("xudp P2P dial quic datagram error: %v", err)
 		return nil, 0, false
 	}
+	if err := conn.VerifyPeerFingerprint(natHoleRespMsg.QUICFingerprint); err != nil {
+		_ = conn.Close()
+		xl.Warnf("xudp P2P quic peer authentication failed: %v", err)
+		return nil, 0, false
+	}
 
 	xl.Infof("xudp P2P quic datagram connection established, localAddr [%s], remoteAddr [%s]", conn.LocalAddr(), conn.RemoteAddr())
 	quicState := conn.ConnectionState()

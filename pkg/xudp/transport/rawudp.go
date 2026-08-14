@@ -67,6 +67,10 @@ func (t *RawUDPTransport) ConnectionState() quic.ConnectionState {
 	return quic.ConnectionState{}
 }
 
+func (t *RawUDPTransport) VerifyPeerFingerprint(string) error {
+	return fmt.Errorf("raw udp transport does not support peer fingerprint verification")
+}
+
 func (t *RawUDPTransport) Close() error {
 	return t.conn.Close()
 }

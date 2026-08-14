@@ -5,6 +5,7 @@ package transport
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"time"
 
@@ -81,6 +82,14 @@ func (t *quicDatagramTransport) MaxDatagramPayloadSize() int {
 
 func (t *quicDatagramTransport) ConnectionState() quic.ConnectionState {
 	return t.conn.ConnectionState()
+}
+
+func (t *quicDatagramTransport) VerifyPeerFingerprint(expected string) error {
+	state := t.conn.ConnectionState()
+	if len(state.TLS.PeerCertificates) == 0 {
+		return fmt.Errorf("missing quic peer certificate")
+	}
+	return verifyFingerprint(expected, [][]byte{state.TLS.PeerCertificates[0].Raw})
 }
 
 func (t *quicDatagramTransport) Close() error {
