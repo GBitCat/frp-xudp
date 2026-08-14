@@ -63,19 +63,6 @@ func (o Options) quicConfig() *quic.Config {
 	}
 }
 
-// DatagramTransport is the small transport abstraction used by XUDP P2P.
-// QUIC provides encryption, authentication, and connection state. The XUDP
-// session layer keeps the same UDP packet semantics by sending datagrams.
-type DatagramTransport interface {
-	SendDatagram([]byte) error
-	ReceiveDatagram(context.Context) ([]byte, error)
-	MaxDatagramPayloadSize() int
-	ConnectionState() quic.ConnectionState
-	Close() error
-	LocalAddr() net.Addr
-	RemoteAddr() net.Addr
-}
-
 type quicDatagramTransport struct {
 	conn *quic.Conn
 }
