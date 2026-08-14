@@ -17,7 +17,6 @@ import (
 	"github.com/fatedier/frp/pkg/naming"
 	"github.com/fatedier/frp/pkg/nathole"
 	"github.com/fatedier/frp/pkg/proto/udp"
-	frptransport "github.com/fatedier/frp/pkg/transport"
 	netpkg "github.com/fatedier/frp/pkg/util/net"
 	"github.com/fatedier/frp/pkg/util/util"
 	"github.com/fatedier/frp/pkg/util/xlog"
@@ -136,18 +135,25 @@ func (sv *XUDPVisitor) tryP2P(firstPkt *msg.UDPPacket) (<-chan struct{}, bool) {
 		prepareResult.NatType, prepareResult.Behavior, prepareResult.Addrs)
 
 	listenConn := prepareResult.ListenConn
+	quicIdentity, err := xudptransport.GenerateIdentity()
+	if err != nil {
+		listenConn.Close()
+		xl.Warnf("xudp P2P generate quic identity error: %v", err)
+		return nil, false
+	}
 
 	// Send NatHoleVisitor to server
 	now := time.Now().Unix()
 	transactionID := nathole.NewTransactionID()
 	natHoleVisitorMsg := &msg.NatHoleVisitor{
-		TransactionID: transactionID,
-		ProxyName:     targetProxyName,
-		Protocol:      "xudp",
-		SignKey:       util.GetAuthKey(sv.cfg.SecretKey, now),
-		Timestamp:     now,
-		MappedAddrs:   prepareResult.Addrs,
-		AssistedAddrs: prepareResult.AssistedAddrs,
+		TransactionID:   transactionID,
+		ProxyName:       targetProxyName,
+		Protocol:        "xudp",
+		SignKey:         util.GetAuthKey(sv.cfg.SecretKey, now),
+		Timestamp:       now,
+		MappedAddrs:     prepareResult.Addrs,
+		AssistedAddrs:   prepareResult.AssistedAddrs,
+		QUICFingerprint: quicIdentity.Fingerprint(),
 	}
 
 	xl.Tracef("xudp P2P exchange info start")
@@ -170,13 +176,12 @@ func (sv *XUDPVisitor) tryP2P(firstPkt *msg.UDPPacket) (<-chan struct{}, bool) {
 
 	xl.Infof("xudp P2P hole established, sid [%s], remoteAddr [%s]", natHoleRespMsg.Sid, raddr)
 
-	tlsConfig, err := frptransport.NewClientTLSConfig("", "", "", raddr.String())
+	tlsConfig, err := xudptransport.ClientTLSConfig(quicIdentity, natHoleRespMsg.QUICFingerprint)
 	if err != nil {
 		newListenConn.Close()
 		xl.Warnf("xudp P2P create quic tls config error: %v", err)
 		return nil, false
 	}
-	tlsConfig.NextProtos = []string{"xudp"}
 
 	quicOpts := xudptransport.OptionsFromClientCfg(sv.clientCfg)
 	dialCtx, cancel := context.WithTimeout(sv.ctx, 10*time.Second)

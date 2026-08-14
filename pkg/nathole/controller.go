@@ -330,11 +330,13 @@ func (c *Controller) analysis(session *Session) (*msg.NatHoleResp, *msg.NatHoleR
 		vm.TransactionID, session.sid, protocol, mode,
 		cm.MappedAddrs, cm.AssistedAddrs, vBehavior,
 		timeoutMs-vBehavior.SendDelayMs, cNatFeature.PortsDifference,
+		cm.QUICFingerprint,
 	)
 	cResp := newNatHoleResponse(
 		cm.TransactionID, session.sid, protocol, mode,
 		vm.MappedAddrs, vm.AssistedAddrs, cBehavior,
 		timeoutMs-cBehavior.SendDelayMs, vNatFeature.PortsDifference,
+		vm.QUICFingerprint,
 	)
 
 	log.Debugf("sid [%s] visitor nat: %+v, candidateAddrs: %v; client nat: %+v, candidateAddrs: %v, protocol: %s",
@@ -354,15 +356,17 @@ func newNatHoleResponse(
 	behavior RecommandBehavior,
 	readTimeoutMs int,
 	portsDifference int,
+	peerQUICFingerprint string,
 ) *msg.NatHoleResp {
 	compactCandidateAddrs := slices.Compact(candidateAddrs)
 	compactAssistedAddrs := slices.Compact(assistedAddrs)
 	return &msg.NatHoleResp{
-		TransactionID:  transactionID,
-		Sid:            sid,
-		Protocol:       protocol,
-		CandidateAddrs: compactCandidateAddrs,
-		AssistedAddrs:  compactAssistedAddrs,
+		TransactionID:   transactionID,
+		Sid:             sid,
+		Protocol:        protocol,
+		CandidateAddrs:  compactCandidateAddrs,
+		AssistedAddrs:   compactAssistedAddrs,
+		QUICFingerprint: peerQUICFingerprint,
 		DetectBehavior: msg.NatHoleDetectBehavior{
 			Mode:              mode,
 			Role:              behavior.Role,
