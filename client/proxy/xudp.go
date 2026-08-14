@@ -195,6 +195,7 @@ func (pxy *XUDPProxy) handleP2PWorkConn(conn net.Conn, _ *msg.StartWorkConn) {
 	}
 	listenConn = newListenConn
 	xl.Infof("xudp nat hole established, sid [%s], remoteAddr [%s]", natHoleRespMsg.Sid, raddr)
+	xl.Debugf("xudp transferring UDP socket ownership to QUIC, localAddr [%s]", listenConn.LocalAddr())
 
 	_ = pxy.msgTransporter.Send(&msg.NatHoleReport{Sid: natHoleRespMsg.Sid, Success: true})
 
@@ -218,7 +219,10 @@ func (pxy *XUDPProxy) listenByQUICDatagram(listenConn *net.UDPConn, identity *xu
 		xl.Warnf("xudp create quic listener error: %v", err)
 		return
 	}
-	defer listener.Close()
+	defer func() {
+		_ = listener.Close()
+		xl.Debugf("xudp p2p QUIC listener closed")
+	}()
 	xl.Infof("xudp p2p QUIC listener starting, localAddr [%s]", listenConn.LocalAddr())
 
 	acceptCtx, cancel := context.WithTimeout(pxy.ctx, 10*time.Second)
