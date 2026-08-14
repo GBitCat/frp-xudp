@@ -219,21 +219,24 @@ func (pxy *XUDPProxy) listenByQUICDatagram(listenConn *net.UDPConn, identity *xu
 		return
 	}
 	defer listener.Close()
+	xl.Infof("xudp p2p QUIC listener starting, localAddr [%s]", listenConn.LocalAddr())
 
 	acceptCtx, cancel := context.WithTimeout(pxy.ctx, 10*time.Second)
 	defer cancel()
+	xl.Infof("xudp p2p waiting for QUIC connection")
 	conn, err := listener.Accept(acceptCtx)
 	if err != nil {
 		xl.Warnf("xudp accept quic connection error: %v", err)
 		return
 	}
+	xl.Infof("xudp p2p QUIC connection accepted, remoteAddr [%s]", conn.RemoteAddr())
 	if err := conn.VerifyPeerFingerprint(expectedClientFingerprint); err != nil {
 		_ = conn.Close()
 		xl.Warnf("xudp quic peer authentication failed: %v", err)
 		return
 	}
 
-	xl.Infof("xudp quic datagram connection established, remoteAddr [%s]", conn.RemoteAddr())
+	xl.Infof("xudp p2p QUIC datagram transport ready, remoteAddr [%s]", conn.RemoteAddr())
 	pxy.forwardP2PQUICDatagram(conn)
 }
 
