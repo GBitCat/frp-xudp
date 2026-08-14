@@ -15,6 +15,9 @@
   （NAT 打洞 + QUIC DATAGRAM），低延迟、不占用 frps 带宽
 - **自动回退**：NAT 打洞失败（对称 NAT、STUN 不可达等）时自动回退为
   frps relay 中转，保证可用性
+- **Peer Authentication**：通过 FRP control channel 交换 QUIC 证书
+  fingerprint，拒绝伪造 peer
+- **断线恢复**：P2P 断开后自动切到 Relay，Relay 周期探测 P2P 并切回直连
 - **会话管理**：Session Table（INIT / PUNCHING / CONNECTED / TIMEOUT），
   自动清理过期会话
 - **Keepalive**：QUIC keepalive 保持 P2P 连接与 NAT 映射存活
