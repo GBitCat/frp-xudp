@@ -70,6 +70,7 @@ type DatagramTransport interface {
 	SendDatagram([]byte) error
 	ReceiveDatagram(context.Context) ([]byte, error)
 	MaxDatagramPayloadSize() int
+	ConnectionState() quic.ConnectionState
 	Close() error
 	LocalAddr() net.Addr
 	RemoteAddr() net.Addr
@@ -89,6 +90,10 @@ func (t *quicDatagramTransport) ReceiveDatagram(ctx context.Context) ([]byte, er
 
 func (t *quicDatagramTransport) MaxDatagramPayloadSize() int {
 	return DefaultMaxDatagramPayloadSize
+}
+
+func (t *quicDatagramTransport) ConnectionState() quic.ConnectionState {
+	return t.conn.ConnectionState()
 }
 
 func (t *quicDatagramTransport) Close() error {

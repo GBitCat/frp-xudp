@@ -2,7 +2,10 @@
 
 package state
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 type Phase string
 
@@ -21,8 +24,8 @@ const (
 type Machine struct {
 	mu             sync.RWMutex
 	phase          Phase
-	generation     uint64
-	transportEpoch uint64
+	generation     atomic.Uint64
+	transportEpoch atomic.Uint64
 }
 
 func NewMachine() *Machine {
@@ -31,19 +34,17 @@ func NewMachine() *Machine {
 
 func (m *Machine) BeginSession() uint64 {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.generation++
-	m.transportEpoch = 0
+	m.transportEpoch.Store(0)
 	m.phase = PhaseInit
-	return m.generation
+	m.mu.Unlock()
+	return m.generation.Add(1)
 }
 
 func (m *Machine) BeginTransport(phase Phase) (uint64, uint64) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.transportEpoch++
 	m.phase = phase
-	return m.generation, m.transportEpoch
+	m.mu.Unlock()
+	return m.generation.Load(), m.transportEpoch.Add(1)
 }
 
 func (m *Machine) SetPhase(phase Phase) {
@@ -54,12 +55,11 @@ func (m *Machine) SetPhase(phase Phase) {
 
 func (m *Machine) Snapshot() (phase Phase, generation, transportEpoch uint64) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.phase, m.generation, m.transportEpoch
+	phase = m.phase
+	m.mu.RUnlock()
+	return phase, m.generation.Load(), m.transportEpoch.Load()
 }
 
 func (m *Machine) IsCurrent(generation, transportEpoch uint64) bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return generation == m.generation && transportEpoch == m.transportEpoch
+	return generation == m.generation.Load() && transportEpoch == m.transportEpoch.Load()
 }

@@ -279,6 +279,9 @@ func (sv *XUDPVisitor) dialP2P(generation uint64) (xudptransport.DatagramTranspo
 	}
 
 	xl.Infof("xudp P2P quic datagram connection established, localAddr [%s], remoteAddr [%s]", conn.LocalAddr(), conn.RemoteAddr())
+	quicState := conn.ConnectionState()
+	xl.Infof("xudp P2P quic connection state: version [%s], datagrams remote [%t]",
+		quicState.Version, quicState.SupportsDatagrams.Remote)
 	_, epoch := sv.state.BeginTransport(xudpstate.PhaseP2PReady)
 	return conn, epoch, true
 }
