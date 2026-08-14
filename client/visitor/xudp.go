@@ -20,6 +20,7 @@ import (
 	netpkg "github.com/fatedier/frp/pkg/util/net"
 	"github.com/fatedier/frp/pkg/util/util"
 	"github.com/fatedier/frp/pkg/util/xlog"
+	xudpstate "github.com/fatedier/frp/pkg/xudp/state"
 	xudptransport "github.com/fatedier/frp/pkg/xudp/transport"
 )
 
@@ -29,6 +30,7 @@ type XUDPVisitor struct {
 	cfg *v1.XUDPVisitorConfig
 
 	mu      sync.Mutex
+	state   *xudpstate.Machine
 	udpConn *net.UDPConn
 	readCh  chan *msg.UDPPacket
 	sendCh  chan *msg.UDPPacket
@@ -57,6 +59,7 @@ func (sv *XUDPVisitor) Run() (err error) {
 	sv.readCh = make(chan *msg.UDPPacket, 1024)
 	sv.sendCh = make(chan *msg.UDPPacket, 1024)
 	sv.closeCh = make(chan struct{})
+	sv.state = xudpstate.NewMachine()
 
 	xl.Infof("xudp start to work, listen on %s", addr)
 
@@ -83,9 +86,11 @@ func (sv *XUDPVisitor) dispatcher() {
 			return
 		}
 
+		generation := sv.state.BeginSession()
+
 		// Try P2P first. On success the P2P worker goroutine takes over
 		// sendCh; the dispatcher waits for the tunnel to close.
-		if done, ok := sv.tryP2P(firstPkt); ok {
+		if done, ok := sv.tryP2P(firstPkt, generation); ok {
 			xl.Infof("xudp tunnel established via p2p")
 			select {
 			case <-done:
@@ -99,7 +104,7 @@ func (sv *XUDPVisitor) dispatcher() {
 		xl.Infof("xudp P2P failed, falling back to relay")
 
 		// Relay runs synchronously until the relay connection ends.
-		if !sv.tryRelay(firstPkt) {
+		if !sv.tryRelay(firstPkt, generation) {
 			xl.Warnf("xudp relay failed, waiting for next packet")
 			continue
 		}
@@ -109,8 +114,10 @@ func (sv *XUDPVisitor) dispatcher() {
 
 // tryP2P attempts NAT hole punching and starts a P2P forwarding worker.
 // On success it returns a channel that is closed when the P2P tunnel ends.
-func (sv *XUDPVisitor) tryP2P(firstPkt *msg.UDPPacket) (<-chan struct{}, bool) {
+func (sv *XUDPVisitor) tryP2P(firstPkt *msg.UDPPacket, generation uint64) (<-chan struct{}, bool) {
 	xl := xlog.FromContextSafe(sv.ctx)
+
+	sv.state.SetPhase(xudpstate.PhaseNATHolePrepare)
 
 	// PreCheck
 	targetProxyName := naming.BuildTargetServerProxyName(sv.clientCfg.User, sv.cfg.ServerUser, sv.cfg.ServerName)
@@ -118,6 +125,8 @@ func (sv *XUDPVisitor) tryP2P(firstPkt *msg.UDPPacket) (<-chan struct{}, bool) {
 		xl.Warnf("xudp P2P preCheck error: %v", err)
 		return nil, false
 	}
+
+	sv.state.SetPhase(xudpstate.PhasePunching)
 
 	// Prepare NAT traversal
 	var opts nathole.PrepareOptions
@@ -176,6 +185,8 @@ func (sv *XUDPVisitor) tryP2P(firstPkt *msg.UDPPacket) (<-chan struct{}, bool) {
 
 	xl.Infof("xudp P2P hole established, sid [%s], remoteAddr [%s]", natHoleRespMsg.Sid, raddr)
 
+	sv.state.SetPhase(xudpstate.PhaseQUICHandshake)
+
 	tlsConfig, err := xudptransport.ClientTLSConfig(quicIdentity, natHoleRespMsg.QUICFingerprint)
 	if err != nil {
 		newListenConn.Close()
@@ -195,10 +206,11 @@ func (sv *XUDPVisitor) tryP2P(firstPkt *msg.UDPPacket) (<-chan struct{}, bool) {
 
 	xl.Infof("xudp P2P quic datagram connection established, localAddr [%s], remoteAddr [%s]", conn.LocalAddr(), conn.RemoteAddr())
 
+	_, epoch := sv.state.BeginTransport(xudpstate.PhaseP2PReady)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		sv.p2pWorker(conn, firstPkt)
+		sv.p2pWorker(conn, firstPkt, generation, epoch)
 	}()
 	return done, true
 }
@@ -206,12 +218,15 @@ func (sv *XUDPVisitor) tryP2P(firstPkt *msg.UDPPacket) (<-chan struct{}, bool) {
 // p2pWorker handles the P2P QUIC DATAGRAM tunnel: reads from the QUIC
 // connection and puts packets on readCh, and reads from sendCh and sends
 // packets through the QUIC connection.
-func (sv *XUDPVisitor) p2pWorker(conn xudptransport.DatagramTransport, firstPkt *msg.UDPPacket) {
+func (sv *XUDPVisitor) p2pWorker(conn xudptransport.DatagramTransport, firstPkt *msg.UDPPacket, generation, epoch uint64) {
 	xl := xlog.FromContextSafe(sv.ctx)
 	defer conn.Close()
 
 	// Send the first packet that triggered the connection
 	if firstPkt != nil {
+		if !sv.state.IsCurrent(generation, epoch) {
+			return
+		}
 		if err := sv.sendP2PQUICDatagram(conn, firstPkt); err != nil {
 			xl.Warnf("xudp P2P send first packet error: %v", err)
 			return
@@ -237,6 +252,9 @@ func (sv *XUDPVisitor) p2pWorker(conn xudptransport.DatagramTransport, firstPkt 
 				xl.Warnf("xudp P2P decode quic datagram error: %v", err)
 				continue
 			}
+			if !sv.state.IsCurrent(generation, epoch) {
+				return
+			}
 			if err := errors.PanicToError(func() {
 				sv.readCh <- pkt
 			}); err != nil {
@@ -259,6 +277,9 @@ func (sv *XUDPVisitor) p2pWorker(conn xudptransport.DatagramTransport, firstPkt 
 			case <-sv.closeCh:
 				return
 			case <-readerDone:
+				return
+			}
+			if !sv.state.IsCurrent(generation, epoch) {
 				return
 			}
 			if err := sv.sendP2PQUICDatagram(conn, pkt); err != nil {
@@ -292,9 +313,11 @@ func (sv *XUDPVisitor) sendP2PQUICDatagram(conn xudptransport.DatagramTransport,
 
 // tryRelay establishes a relay connection through frps (like SUDP) and runs
 // the relay worker synchronously until the connection ends.
-func (sv *XUDPVisitor) tryRelay(firstPkt *msg.UDPPacket) bool {
+func (sv *XUDPVisitor) tryRelay(firstPkt *msg.UDPPacket, generation uint64) bool {
 	xl := xlog.FromContextSafe(sv.ctx)
 	xl.Infof("xudp relay: dialing relay visitor conn")
+
+	_, epoch := sv.state.BeginTransport(xudpstate.PhaseRelayConnect)
 
 	rawConn, err := sv.dialRawVisitorConn(sv.cfg.GetBaseConfig())
 	if err != nil {
@@ -320,14 +343,15 @@ func (sv *XUDPVisitor) tryRelay(firstPkt *msg.UDPPacket) bool {
 	}
 
 	payloadConn := msg.NewConn(workConn, payloadRW)
-	sv.relayWorker(payloadConn, firstPkt)
+	sv.state.SetPhase(xudpstate.PhaseRelayReady)
+	sv.relayWorker(payloadConn, firstPkt, generation, epoch)
 	return true
 }
 
 // relayWorker handles the relay tunnel: reads from the relay work conn and
 // puts packets on readCh, and reads from sendCh and sends packets through
 // the relay work conn.
-func (sv *XUDPVisitor) relayWorker(payloadConn *msg.Conn, firstPkt *msg.UDPPacket) {
+func (sv *XUDPVisitor) relayWorker(payloadConn *msg.Conn, firstPkt *msg.UDPPacket, generation, epoch uint64) {
 	xl := xlog.FromContextSafe(sv.ctx)
 	defer func() {
 		payloadConn.Close()
@@ -352,6 +376,9 @@ func (sv *XUDPVisitor) relayWorker(payloadConn *msg.Conn, firstPkt *msg.UDPPacke
 			case *msg.Ping:
 				continue
 			case *msg.UDPPacket:
+				if !sv.state.IsCurrent(generation, epoch) {
+					return
+				}
 				if err := errors.PanicToError(func() {
 					sv.readCh <- m
 				}); err != nil {
@@ -367,6 +394,9 @@ func (sv *XUDPVisitor) relayWorker(payloadConn *msg.Conn, firstPkt *msg.UDPPacke
 	go func() {
 		defer close(senderDone)
 		if firstPkt != nil {
+			if !sv.state.IsCurrent(generation, epoch) {
+				return
+			}
 			xl.Infof("xudp relay: sender writing first packet, len %d", len(firstPkt.Content))
 			if err := payloadConn.WriteMsg(firstPkt); err != nil {
 				xl.Warnf("xudp relay: sender write first packet error: %v", err)
@@ -386,6 +416,9 @@ func (sv *XUDPVisitor) relayWorker(payloadConn *msg.Conn, firstPkt *msg.UDPPacke
 			case <-closeCh:
 				return
 			}
+			if !sv.state.IsCurrent(generation, epoch) {
+				return
+			}
 			if err := payloadConn.WriteMsg(pkt); err != nil {
 				xl.Warnf("xudp relay: sender write error: %v", err)
 				return
@@ -396,6 +429,7 @@ func (sv *XUDPVisitor) relayWorker(payloadConn *msg.Conn, firstPkt *msg.UDPPacke
 	<-readerDone
 	close(closeCh)
 	<-senderDone
+	sv.state.SetPhase(xudpstate.PhaseClosed)
 }
 
 func (sv *XUDPVisitor) Close() {
