@@ -284,6 +284,9 @@ func (sv *XUDPVisitor) sendP2PQUICDatagram(conn xudptransport.DatagramTransport,
 	if err != nil {
 		return err
 	}
+	if len(body) > conn.MaxDatagramPayloadSize() {
+		return fmt.Errorf("xudp datagram size %d exceeds limit %d", len(body), conn.MaxDatagramPayloadSize())
+	}
 	return conn.SendDatagram(body)
 }
 

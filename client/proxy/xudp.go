@@ -287,6 +287,10 @@ func (pxy *XUDPProxy) forwardP2PQUICDatagram(conn xudptransport.DatagramTranspor
 					xl.Warnf("xudp encode p2p quic data packet error: %v", err)
 					continue
 				}
+				if len(body) > conn.MaxDatagramPayloadSize() {
+					xl.Warnf("xudp p2p quic datagram too large: %d > %d", len(body), conn.MaxDatagramPayloadSize())
+					continue
+				}
 				if err := conn.SendDatagram(body); err != nil {
 					xl.Warnf("xudp p2p quic write error: %v", err)
 					return
