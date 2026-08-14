@@ -11,22 +11,17 @@ import (
 	"time"
 
 	"github.com/fatedier/golib/errors"
-	"github.com/fatedier/golib/pool"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/naming"
 	"github.com/fatedier/frp/pkg/nathole"
 	"github.com/fatedier/frp/pkg/proto/udp"
+	frptransport "github.com/fatedier/frp/pkg/transport"
 	netpkg "github.com/fatedier/frp/pkg/util/net"
 	"github.com/fatedier/frp/pkg/util/util"
 	"github.com/fatedier/frp/pkg/util/xlog"
-)
-
-const (
-	xudpP2PTypeData byte = 0
-	xudpP2PTypePing byte = 1
-	xudpP2PTypePong byte = 2
+	xudptransport "github.com/fatedier/frp/pkg/xudp/transport"
 )
 
 type XUDPVisitor struct {
@@ -175,24 +170,44 @@ func (sv *XUDPVisitor) tryP2P(firstPkt *msg.UDPPacket) (<-chan struct{}, bool) {
 
 	xl.Infof("xudp P2P hole established, sid [%s], remoteAddr [%s]", natHoleRespMsg.Sid, raddr)
 
+	tlsConfig, err := frptransport.NewClientTLSConfig("", "", "", raddr.String())
+	if err != nil {
+		newListenConn.Close()
+		xl.Warnf("xudp P2P create quic tls config error: %v", err)
+		return nil, false
+	}
+	tlsConfig.NextProtos = []string{"xudp"}
+
+	quicOpts := xudptransport.OptionsFromClientCfg(sv.clientCfg)
+	dialCtx, cancel := context.WithTimeout(sv.ctx, 10*time.Second)
+	conn, err := xudptransport.Dial(dialCtx, newListenConn, raddr, tlsConfig, quicOpts)
+	cancel()
+	if err != nil {
+		newListenConn.Close()
+		xl.Warnf("xudp P2P dial quic datagram error: %v", err)
+		return nil, false
+	}
+
+	xl.Infof("xudp P2P quic datagram connection established, localAddr [%s], remoteAddr [%s]", conn.LocalAddr(), conn.RemoteAddr())
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		sv.p2pWorker(newListenConn, raddr, firstPkt)
+		sv.p2pWorker(conn, firstPkt)
 	}()
 	return done, true
 }
 
-// p2pWorker handles the P2P UDP tunnel: reads from the P2P connection and
-// puts packets on readCh, and reads from sendCh and encodes packets to send
-// through the P2P connection.
-func (sv *XUDPVisitor) p2pWorker(p2pConn *net.UDPConn, raddr *net.UDPAddr, firstPkt *msg.UDPPacket) {
+// p2pWorker handles the P2P QUIC DATAGRAM tunnel: reads from the QUIC
+// connection and puts packets on readCh, and reads from sendCh and sends
+// packets through the QUIC connection.
+func (sv *XUDPVisitor) p2pWorker(conn xudptransport.DatagramTransport, firstPkt *msg.UDPPacket) {
 	xl := xlog.FromContextSafe(sv.ctx)
-	defer p2pConn.Close()
+	defer conn.Close()
 
 	// Send the first packet that triggered the connection
 	if firstPkt != nil {
-		if err := sv.sendP2PPacket(p2pConn, raddr, firstPkt); err != nil {
+		if err := sv.sendP2PQUICDatagram(conn, firstPkt); err != nil {
 			xl.Warnf("xudp P2P send first packet error: %v", err)
 			return
 		}
@@ -202,35 +217,25 @@ func (sv *XUDPVisitor) p2pWorker(p2pConn *net.UDPConn, raddr *net.UDPAddr, first
 	readerDone := make(chan struct{})
 	go func() {
 		defer close(readerDone)
-		buf := pool.GetBuf(int(sv.clientCfg.UDPPacketSize) + 1024)
-		defer pool.PutBuf(buf)
 		for {
 			select {
 			case <-sv.closeCh:
 				return
 			default:
 			}
-			_ = p2pConn.SetReadDeadline(time.Now().Add(60 * time.Second))
-			n, _, err := p2pConn.ReadFromUDP(buf)
+			data, err := conn.ReceiveDatagram(sv.ctx)
 			if err != nil {
 				return
 			}
-			if n < 1 {
+			pkt, err := msg.DecodeUDPPacketBinary(data)
+			if err != nil {
+				xl.Warnf("xudp P2P decode quic datagram error: %v", err)
 				continue
 			}
-			switch buf[0] {
-			case xudpP2PTypeData:
-				pkt, err := msg.DecodeUDPPacketBinary(buf[1:n])
-				if err != nil {
-					continue
-				}
-				if err := errors.PanicToError(func() {
-					sv.readCh <- pkt
-				}); err != nil {
-					return
-				}
-			case xudpP2PTypePong:
-				// Heartbeat response, keep connection alive
+			if err := errors.PanicToError(func() {
+				sv.readCh <- pkt
+			}); err != nil {
+				return
 			}
 		}
 	}()
@@ -251,15 +256,11 @@ func (sv *XUDPVisitor) p2pWorker(p2pConn *net.UDPConn, raddr *net.UDPAddr, first
 			case <-readerDone:
 				return
 			}
-			if err := sv.sendP2PPacket(p2pConn, raddr, pkt); err != nil {
+			if err := sv.sendP2PQUICDatagram(conn, pkt); err != nil {
 				return
 			}
 		}
 	}()
-
-	// Heartbeat ticker
-	ticker := time.NewTicker(20 * time.Second)
-	defer ticker.Stop()
 
 	for {
 		select {
@@ -269,24 +270,16 @@ func (sv *XUDPVisitor) p2pWorker(p2pConn *net.UDPConn, raddr *net.UDPAddr, first
 			return
 		case <-senderDone:
 			return
-		case <-ticker.C:
-			if _, err := p2pConn.WriteToUDP([]byte{xudpP2PTypePing}, raddr); err != nil {
-				return
-			}
 		}
 	}
 }
 
-func (sv *XUDPVisitor) sendP2PPacket(p2pConn *net.UDPConn, raddr *net.UDPAddr, pkt *msg.UDPPacket) error {
+func (sv *XUDPVisitor) sendP2PQUICDatagram(conn xudptransport.DatagramTransport, pkt *msg.UDPPacket) error {
 	body, err := msg.EncodeUDPPacketBinary(pkt)
 	if err != nil {
 		return err
 	}
-	datagram := make([]byte, 1+len(body))
-	datagram[0] = xudpP2PTypeData
-	copy(datagram[1:], body)
-	_, err = p2pConn.WriteToUDP(datagram, raddr)
-	return err
+	return conn.SendDatagram(body)
 }
 
 // tryRelay establishes a relay connection through frps (like SUDP) and runs

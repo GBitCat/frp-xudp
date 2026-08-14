@@ -12,12 +12,12 @@
 ## 核心特性
 
 - **`xudp` 代理类型**：UDP 流量在两个 frpc 之间直接 P2P 传输
-  （NAT 打洞 + 裸 UDP 转发），低延迟、不占用 frps 带宽
+  （NAT 打洞 + QUIC DATAGRAM），低延迟、不占用 frps 带宽
 - **自动回退**：NAT 打洞失败（对称 NAT、STUN 不可达等）时自动回退为
   frps relay 中转，保证可用性
 - **会话管理**：Session Table（INIT / PUNCHING / CONNECTED / TIMEOUT），
   自动清理过期会话
-- **Keepalive**：P2P 连接定期心跳，保持 NAT 映射存活
+- **Keepalive**：QUIC keepalive 保持 P2P 连接与 NAT 映射存活
 - **纯增量扩展**：不影响官方既有代理类型
   （tcp / udp / xtcp / stcp / sudp / http / https / tcpmux 等）
 
