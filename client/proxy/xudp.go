@@ -18,16 +18,14 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
-	"fmt"
-	"io"
 	"net"
 	"reflect"
 	"strconv"
 	"time"
 
 	"github.com/fatedier/golib/errors"
-	"github.com/fatedier/golib/pool"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/msg"
@@ -35,13 +33,9 @@ import (
 	"github.com/fatedier/frp/pkg/nathole"
 	"github.com/fatedier/frp/pkg/proto/udp"
 	"github.com/fatedier/frp/pkg/proto/wire"
+	frptransport "github.com/fatedier/frp/pkg/transport"
 	netpkg "github.com/fatedier/frp/pkg/util/net"
-)
-
-const (
-	p2pMsgTypeData byte = 0
-	p2pMsgTypePing byte = 1
-	p2pMsgTypePong byte = 2
+	xudptransport "github.com/fatedier/frp/pkg/xudp/transport"
 )
 
 func init() {
@@ -198,94 +192,110 @@ func (pxy *XUDPProxy) handleP2PWorkConn(conn net.Conn, _ *msg.StartWorkConn) {
 
 	_ = pxy.msgTransporter.Send(&msg.NatHoleReport{Sid: natHoleRespMsg.Sid, Success: true})
 
-	// Forward UDP between P2P connection and local UDP service
-	pxy.forwardP2PUDP(listenConn, raddr)
+	// The NAT hole remains responsible for finding the UDP path. QUIC
+	// DATAGRAM is established on top of that path and owns the data-plane
+	// security for XUDP.
+	pxy.listenByQUICDatagram(listenConn)
 }
 
-// forwardP2PUDP reads UDP datagrams from the P2P connection and forwards
-// them to the local UDP service, and vice versa.
-func (pxy *XUDPProxy) forwardP2PUDP(p2pConn *net.UDPConn, raddr *net.UDPAddr) {
+func (pxy *XUDPProxy) listenByQUICDatagram(listenConn *net.UDPConn) {
 	xl := pxy.xl
 
-	// readCh carries UDP packets from the P2P connection to be forwarded to local service
-	// sendCh carries UDP packets from the local service to be sent through P2P connection
+	tlsConfig, err := frptransport.NewServerTLSConfig("", "", "")
+	if err != nil {
+		xl.Warnf("xudp create quic tls config error: %v", err)
+		return
+	}
+	tlsConfig.NextProtos = []string{"xudp"}
+
+	listener, err := xudptransport.Listen(listenConn, tlsConfig, xudptransport.OptionsFromClientCfg(pxy.clientCfg))
+	if err != nil {
+		xl.Warnf("xudp create quic listener error: %v", err)
+		return
+	}
+	defer listener.Close()
+
+	acceptCtx, cancel := context.WithTimeout(pxy.ctx, 10*time.Second)
+	defer cancel()
+	conn, err := listener.Accept(acceptCtx)
+	if err != nil {
+		xl.Warnf("xudp accept quic connection error: %v", err)
+		return
+	}
+
+	xl.Infof("xudp quic datagram connection established, remoteAddr [%s]", conn.RemoteAddr())
+	pxy.forwardP2PQUICDatagram(conn)
+}
+
+// forwardP2PQUICDatagram bridges QUIC DATAGRAMs and the local UDP service.
+func (pxy *XUDPProxy) forwardP2PQUICDatagram(conn xudptransport.DatagramTransport) {
+	xl := pxy.xl
+
+	// readCh carries UDP packets from the P2P QUIC connection to the local service.
+	// sendCh carries UDP packets from the local service to the P2P QUIC connection.
 	readCh := make(chan *msg.UDPPacket, 1024)
 	sendCh := make(chan msg.Message, 1024)
 
-	// Start the Forwarder to bridge readCh/sendCh and the local UDP service.
-	// Local-service replies flow into sendCh (as msg.Message) and are picked
-	// up by the encoder goroutine below for transmission through the P2P tunnel.
 	go udp.Forwarder(pxy.localAddr, readCh, sendCh,
 		int(pxy.clientCfg.UDPPacketSize), pxy.cfg.Transport.ProxyProtocolVersion)
 
-	// Read from P2P connection and forward to local service
+	readerDone := make(chan struct{})
 	go func() {
-		defer func() {
-			close(readCh)
-			p2pConn.Close()
-		}()
-		buf := pool.GetBuf(int(pxy.clientCfg.UDPPacketSize) + 1024)
-		defer pool.PutBuf(buf)
+		defer close(readerDone)
+		defer close(readCh)
 		for {
-			_ = p2pConn.SetReadDeadline(time.Now().Add(60 * time.Second))
-			n, _, err := p2pConn.ReadFromUDP(buf)
+			data, err := conn.ReceiveDatagram(pxy.ctx)
 			if err != nil {
-				xl.Warnf("xudp p2p read error: %v", err)
+				xl.Debugf("xudp p2p quic receive error: %v", err)
 				return
 			}
-			if n < 1 {
+			pkt, err := msg.DecodeUDPPacketBinary(data)
+			if err != nil {
+				xl.Warnf("xudp decode p2p quic data packet error: %v", err)
 				continue
 			}
-			msgType := buf[0]
-			switch msgType {
-			case p2pMsgTypeData:
-				pkt, err := msg.DecodeUDPPacketBinary(buf[1:n])
-				if err != nil {
-					xl.Warnf("xudp decode p2p data packet error: %v", err)
+			if err := errors.PanicToError(func() {
+				readCh <- pkt
+			}); err != nil {
+				xl.Debugf("xudp p2p quic reader closed")
+				return
+			}
+		}
+	}()
+
+	senderDone := make(chan struct{})
+	go func() {
+		defer close(senderDone)
+		for {
+			select {
+			case <-pxy.ctx.Done():
+				return
+			case <-readerDone:
+				return
+			case raw := <-sendCh:
+				pkt, ok := raw.(*msg.UDPPacket)
+				if !ok {
 					continue
 				}
-				readCh <- pkt
-			case p2pMsgTypePing:
-				// Respond with pong
-				_, _ = p2pConn.WriteToUDP([]byte{p2pMsgTypePong}, raddr)
-			case p2pMsgTypePong:
-				// Heartbeat response, ignore
+				body, err := msg.EncodeUDPPacketBinary(pkt)
+				if err != nil {
+					xl.Warnf("xudp encode p2p quic data packet error: %v", err)
+					continue
+				}
+				if err := conn.SendDatagram(body); err != nil {
+					xl.Warnf("xudp p2p quic write error: %v", err)
+					return
+				}
 			}
 		}
 	}()
 
-	// Read from local service responses (via sendCh) and forward through P2P
-	go func() {
-		for raw := range sendCh {
-			pkt, ok := raw.(*msg.UDPPacket)
-			if !ok {
-				continue
-			}
-			body, err := msg.EncodeUDPPacketBinary(pkt)
-			if err != nil {
-				xl.Warnf("xudp encode p2p data packet error: %v", err)
-				continue
-			}
-			datagram := make([]byte, 1+len(body))
-			datagram[0] = p2pMsgTypeData
-			copy(datagram[1:], body)
-			if _, err := p2pConn.WriteToUDP(datagram, raddr); err != nil {
-				xl.Warnf("xudp p2p write error: %v", err)
-				return
-			}
-		}
-	}()
-
-	// Send heartbeat to keep NAT mapping alive
-	heartbeatTicker := time.NewTicker(20 * time.Second)
-	defer heartbeatTicker.Stop()
-	for range heartbeatTicker.C {
-		_, err := p2pConn.WriteToUDP([]byte{p2pMsgTypePing}, raddr)
-		if err != nil {
-			xl.Warnf("xudp p2p heartbeat error: %v", err)
-			return
-		}
+	select {
+	case <-pxy.ctx.Done():
+	case <-readerDone:
+	case <-senderDone:
 	}
+	_ = conn.Close()
 }
 
 // handleRelayWorkConn forwards UDP packets through the frps relay
@@ -360,8 +370,3 @@ func (pxy *XUDPProxy) handleRelayWorkConn(conn net.Conn, _ *msg.StartWorkConn) {
 	udp.Forwarder(pxy.localAddr, readCh, sendCh,
 		int(pxy.clientCfg.UDPPacketSize), pxy.cfg.Transport.ProxyProtocolVersion)
 }
-
-var (
-	_ = io.EOF
-	_ = fmt.Sprintf
-)
