@@ -190,22 +190,24 @@ type UDPPacket struct {
 }
 
 type NatHoleVisitor struct {
-	TransactionID string   `json:"transaction_id,omitempty"`
-	ProxyName     string   `json:"proxy_name,omitempty"`
-	PreCheck      bool     `json:"pre_check,omitempty"`
-	Protocol      string   `json:"protocol,omitempty"`
-	SignKey       string   `json:"sign_key,omitempty"`
-	Timestamp     int64    `json:"timestamp,omitempty"`
-	MappedAddrs   []string `json:"mapped_addrs,omitempty"`
-	AssistedAddrs []string `json:"assisted_addrs,omitempty"`
+	TransactionID   string   `json:"transaction_id,omitempty"`
+	ProxyName       string   `json:"proxy_name,omitempty"`
+	PreCheck        bool     `json:"pre_check,omitempty"`
+	Protocol        string   `json:"protocol,omitempty"`
+	SignKey         string   `json:"sign_key,omitempty"`
+	Timestamp       int64    `json:"timestamp,omitempty"`
+	MappedAddrs     []string `json:"mapped_addrs,omitempty"`
+	AssistedAddrs   []string `json:"assisted_addrs,omitempty"`
+	QUICFingerprint string   `json:"quic_fingerprint,omitempty"`
 }
 
 type NatHoleClient struct {
-	TransactionID string   `json:"transaction_id,omitempty"`
-	ProxyName     string   `json:"proxy_name,omitempty"`
-	Sid           string   `json:"sid,omitempty"`
-	MappedAddrs   []string `json:"mapped_addrs,omitempty"`
-	AssistedAddrs []string `json:"assisted_addrs,omitempty"`
+	TransactionID   string   `json:"transaction_id,omitempty"`
+	ProxyName       string   `json:"proxy_name,omitempty"`
+	Sid             string   `json:"sid,omitempty"`
+	MappedAddrs     []string `json:"mapped_addrs,omitempty"`
+	AssistedAddrs   []string `json:"assisted_addrs,omitempty"`
+	QUICFingerprint string   `json:"quic_fingerprint,omitempty"`
 }
 
 type PortsRange struct {
@@ -225,13 +227,14 @@ type NatHoleDetectBehavior struct {
 }
 
 type NatHoleResp struct {
-	TransactionID  string                `json:"transaction_id,omitempty"`
-	Sid            string                `json:"sid,omitempty"`
-	Protocol       string                `json:"protocol,omitempty"`
-	CandidateAddrs []string              `json:"candidate_addrs,omitempty"`
-	AssistedAddrs  []string              `json:"assisted_addrs,omitempty"`
-	DetectBehavior NatHoleDetectBehavior `json:"detect_behavior,omitempty"`
-	Error          string                `json:"error,omitempty"`
+	TransactionID   string                `json:"transaction_id,omitempty"`
+	Sid             string                `json:"sid,omitempty"`
+	Protocol        string                `json:"protocol,omitempty"`
+	CandidateAddrs  []string              `json:"candidate_addrs,omitempty"`
+	AssistedAddrs   []string              `json:"assisted_addrs,omitempty"`
+	DetectBehavior  NatHoleDetectBehavior `json:"detect_behavior,omitempty"`
+	Error           string                `json:"error,omitempty"`
+	QUICFingerprint string                `json:"quic_fingerprint,omitempty"`
 }
 
 type NatHoleSid struct {

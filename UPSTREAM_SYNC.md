@@ -16,7 +16,7 @@
 - 源码目录：`frp-src/`（开发容器 `frp-dev` 挂载为 `/workspace/src`）
 - 当前基线提交：`71a2bf3`（2026-08-09，上游 dev 分支）
 - 仓库状态：浅克隆（shallow），带 `origin` remote
-- 我们的改动：6 个修改文件 + 4 个新增路径（详见第 5 节）
+- 我们的改动：6 个修改文件 + 多个新增路径（详见第 5 节）
 
 ## 3. 升级前置准备（只需做一次）
 
@@ -88,10 +88,14 @@ git tag xudp-v0.70.1
 | `pkg/config/v1/validation/visitor.go` | switch 新增 case | 补上 xudp case |
 | `client/visitor/visitor.go` | 工厂 switch 新增 case | 保留 `XUDPVisitor` 构造分支 |
 | `server/proxy/proxy.go` | `joinUserConnection` 的 SUDP 桥接演进 | 确认 xudp 仍走 UDP 帧桥接分支 |
+| `pkg/msg/msg.go` | NAT Hole 消息字段 | 保留 XUDP 的 `QUICFingerprint` 字段 |
+| `pkg/nathole/controller.go` | NAT Hole 响应分析 | 继续转发 `QUICFingerprint` |
 
 以下新增文件不会产生 git 冲突，但**必须检查编译与语义**：
 
 - `pkg/xudp/session/table.go`：独立包，通常无需改动
+- `pkg/xudp/state/state.go`：XUDP 状态机，通常无需改动
+- `pkg/xudp/transport/`：QUIC DATAGRAM、peer identity、MTU 与 benchmark
 - `client/proxy/xudp.go`、`client/visitor/xudp.go`、`server/proxy/xudp.go`：
   依赖上游 `nathole`（Prepare/ExchangeInfo/MakeHole）与 `msg.NatHole*` 消息，
   上游改签名/字段时编译会报错，需要按新 API 适配

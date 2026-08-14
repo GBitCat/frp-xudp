@@ -1,12 +1,22 @@
 # FRP XUDP Extension Design Document
 
-版本：v0.1
+版本：v0.2
 
 > 注意：XUDP 是 frp 的**独立扩展**，未合入上游 fatedier/frp（上游多次收到
 > 相关请求后未实现，见 fatedier/frp issues #1729 / #4173）。
 > 本扩展仅在本仓库（frp-xudp）维护，请勿在官方项目中期望该功能。
 
 目标：为 FRP 增加 P2P UDP Proxy 能力。
+
+## 当前实现状态
+
+- XUDP P2P 数据面使用 QUIC DATAGRAM（RFC 9221），不使用 QUIC Stream。
+- NAT Hole Punching 继续复用 FRP 原有 `pkg/nathole`。
+- P2P 双方通过临时证书 SHA-256 fingerprint 做 peer authentication。
+- QUIC DATAGRAM 采用保守 1200 字节 payload 限制，避免依赖 IP fragmentation。
+- Visitor 使用显式 P2P/Relay 状态机和 generation/transport epoch 隔离旧 transport。
+- 支持 P2P 失败自动 Relay、Relay 周期探测并恢复 P2P。
+- SUDP 保持 upstream FRP 原有中继和安全模型，不参与本次改造。
 
 ------------------------------------------------------------------------
 
@@ -79,7 +89,7 @@ XUDP：
 
                               |
 
-                         Direct UDP
+                    QUIC DATAGRAM
 
 ------------------------------------------------------------------------
 
@@ -95,14 +105,14 @@ XUDP：
     │    └── xudp.go
     │
     ├── xudp/
-    │    ├── stun/
-    │    │     └── client.go
-    │    ├── punch/
-    │    │     └── hole.go
     │    ├── session/
     │    │     └── table.go
-    │    └── relay/
-    │          └── fallback.go
+    │    ├── state/
+    │    │     └── state.go
+    │    └── transport/
+    │          ├── quic.go
+    │          ├── identity.go
+    │          └── mtu.go
     │
     ├── client/
     │    └── xudp_client.go
@@ -151,8 +161,10 @@ stunServer = [
 3.  frps 保存节点信息
 4.  请求连接时交换 endpoint
 5.  尝试 UDP 打洞
-6.  成功后进入 P2P
-7.  失败后回退 relay
+6.  成功后进入 QUIC Handshake
+7.  QUIC DATAGRAM 建立后进入 P2P_READY
+8.  P2P 失败或断线后进入 RELAY_READY
+9.  Relay 周期探测 P2P，成功后切回 P2P_READY
 
 ------------------------------------------------------------------------
 
@@ -248,16 +260,40 @@ UDP 无连接，需要维护：
 状态：
 
     INIT
-
+    NAT_HOLE_PREPARE
     PUNCHING
-
-    CONNECTED
-
-    TIMEOUT
+    QUIC_HANDSHAKE
+    P2P_READY
+    RELAY_CONNECT
+    RELAY_READY
+    RECOVERING
+    CLOSED
 
 ------------------------------------------------------------------------
 
 # 9. 数据模式
+
+P2P 模式：
+
+```text
+Application UDP
+      |
+      v
+XUDP UDP Packet
+      |
+      v
+QUIC DATAGRAM
+      |
+      v
+UDP Socket
+```
+
+Relay 模式继续使用 FRP 原有 SUDP 风格 relay，不强制应用 QUIC。
+
+## MTU
+
+默认最大 QUIC DATAGRAM payload 为 1200 字节。超过该值的数据报会
+被丢弃并记录错误，不依赖底层 IP fragmentation。
 
 ## P2P模式
 

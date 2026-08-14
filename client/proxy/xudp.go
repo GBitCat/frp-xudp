@@ -33,7 +33,6 @@ import (
 	"github.com/fatedier/frp/pkg/nathole"
 	"github.com/fatedier/frp/pkg/proto/udp"
 	"github.com/fatedier/frp/pkg/proto/wire"
-	frptransport "github.com/fatedier/frp/pkg/transport"
 	netpkg "github.com/fatedier/frp/pkg/util/net"
 	xudptransport "github.com/fatedier/frp/pkg/xudp/transport"
 )
@@ -159,14 +158,21 @@ func (pxy *XUDPProxy) handleP2PWorkConn(conn net.Conn, _ *msg.StartWorkConn) {
 		prepareResult.NatType, prepareResult.Behavior, prepareResult.Addrs, prepareResult.AssistedAddrs)
 	defer prepareResult.ListenConn.Close()
 
+	quicIdentity, err := xudptransport.GenerateIdentity()
+	if err != nil {
+		xl.Warnf("xudp generate quic identity error: %v", err)
+		return
+	}
+
 	// Send NatHoleClient to server and get response
 	transactionID := nathole.NewTransactionID()
 	natHoleClientMsg := &msg.NatHoleClient{
-		TransactionID: transactionID,
-		ProxyName:     naming.AddUserPrefix(pxy.clientCfg.User, pxy.cfg.Name),
-		Sid:           natHoleSidMsg.Sid,
-		MappedAddrs:   prepareResult.Addrs,
-		AssistedAddrs: prepareResult.AssistedAddrs,
+		TransactionID:   transactionID,
+		ProxyName:       naming.AddUserPrefix(pxy.clientCfg.User, pxy.cfg.Name),
+		Sid:             natHoleSidMsg.Sid,
+		MappedAddrs:     prepareResult.Addrs,
+		AssistedAddrs:   prepareResult.AssistedAddrs,
+		QUICFingerprint: quicIdentity.Fingerprint(),
 	}
 
 	xl.Tracef("xudp nathole exchange info start")
@@ -195,18 +201,17 @@ func (pxy *XUDPProxy) handleP2PWorkConn(conn net.Conn, _ *msg.StartWorkConn) {
 	// The NAT hole remains responsible for finding the UDP path. QUIC
 	// DATAGRAM is established on top of that path and owns the data-plane
 	// security for XUDP.
-	pxy.listenByQUICDatagram(listenConn)
+	pxy.listenByQUICDatagram(listenConn, quicIdentity, natHoleRespMsg.QUICFingerprint)
 }
 
-func (pxy *XUDPProxy) listenByQUICDatagram(listenConn *net.UDPConn) {
+func (pxy *XUDPProxy) listenByQUICDatagram(listenConn *net.UDPConn, identity *xudptransport.Identity, expectedClientFingerprint string) {
 	xl := pxy.xl
 
-	tlsConfig, err := frptransport.NewServerTLSConfig("", "", "")
+	tlsConfig, err := xudptransport.ServerTLSConfig(identity, expectedClientFingerprint)
 	if err != nil {
 		xl.Warnf("xudp create quic tls config error: %v", err)
 		return
 	}
-	tlsConfig.NextProtos = []string{"xudp"}
 
 	listener, err := xudptransport.Listen(listenConn, tlsConfig, xudptransport.OptionsFromClientCfg(pxy.clientCfg))
 	if err != nil {
@@ -280,6 +285,10 @@ func (pxy *XUDPProxy) forwardP2PQUICDatagram(conn xudptransport.DatagramTranspor
 				body, err := msg.EncodeUDPPacketBinary(pkt)
 				if err != nil {
 					xl.Warnf("xudp encode p2p quic data packet error: %v", err)
+					continue
+				}
+				if len(body) > conn.MaxDatagramPayloadSize() {
+					xl.Warnf("xudp p2p quic datagram too large: %d > %d", len(body), conn.MaxDatagramPayloadSize())
 					continue
 				}
 				if err := conn.SendDatagram(body); err != nil {
