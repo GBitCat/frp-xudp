@@ -38,6 +38,12 @@ type XUDPVisitor struct {
 	closeCh chan struct{}
 	cancel  func()
 	closed  bool
+
+	// These hooks keep recovery orchestration testable without changing the
+	// production dial implementations. A nil hook uses the real dialer.
+	p2PDialer        func(uint64) (xudptransport.DatagramTransport, uint64, bool)
+	relayDialer      func(uint64) (*msg.Conn, uint64, bool)
+	recoveryInterval time.Duration
 }
 
 type xudpActiveTransport interface {
@@ -166,7 +172,7 @@ func (sv *XUDPVisitor) runSession(firstPkt *msg.UDPPacket) {
 		default:
 		}
 
-		if conn, epoch, ok := sv.dialP2P(generation); ok {
+		if conn, epoch, ok := sv.dialP2PForGeneration(generation); ok {
 			xl.Infof("xudp tunnel established via p2p")
 			sv.runActiveTransport(&p2pActiveTransport{conn: conn}, generation, epoch, pendingPacket, nil)
 			pendingPacket = nil
@@ -195,7 +201,9 @@ func (sv *XUDPVisitor) runSession(firstPkt *msg.UDPPacket) {
 func (sv *XUDPVisitor) dialP2P(generation uint64) (xudptransport.DatagramTransport, uint64, bool) {
 	xl := xlog.FromContextSafe(sv.ctx)
 
-	sv.state.SetPhase(xudpstate.PhaseNATHolePrepare)
+	if !sv.state.SetPhaseForGeneration(generation, xudpstate.PhaseNATHolePrepare) {
+		return nil, 0, false
+	}
 
 	targetProxyName := naming.BuildTargetServerProxyName(sv.clientCfg.User, sv.cfg.ServerUser, sv.cfg.ServerName)
 	if err := nathole.PreCheck(sv.ctx, sv.helper.MsgTransporter(), targetProxyName, 5*time.Second); err != nil {
@@ -203,7 +211,9 @@ func (sv *XUDPVisitor) dialP2P(generation uint64) (xudptransport.DatagramTranspo
 		return nil, 0, false
 	}
 
-	sv.state.SetPhase(xudpstate.PhasePunching)
+	if !sv.state.SetPhaseForGeneration(generation, xudpstate.PhasePunching) {
+		return nil, 0, false
+	}
 
 	var opts nathole.PrepareOptions
 	if sv.cfg.NatTraversal != nil && sv.cfg.NatTraversal.DisableAssistedAddrs {
@@ -260,7 +270,10 @@ func (sv *XUDPVisitor) dialP2P(generation uint64) (xudptransport.DatagramTranspo
 
 	xl.Infof("xudp P2P hole established, sid [%s], remoteAddr [%s]", natHoleRespMsg.Sid, raddr)
 
-	sv.state.SetPhase(xudpstate.PhaseQUICHandshake)
+	if !sv.state.SetPhaseForGeneration(generation, xudpstate.PhaseQUICHandshake) {
+		newListenConn.Close()
+		return nil, 0, false
+	}
 
 	tlsConfig, err := xudptransport.ClientTLSConfig(quicIdentity, natHoleRespMsg.QUICFingerprint)
 	if err != nil {
@@ -288,7 +301,11 @@ func (sv *XUDPVisitor) dialP2P(generation uint64) (xudptransport.DatagramTranspo
 	quicState := conn.ConnectionState()
 	xl.Infof("xudp P2P quic connection state: version [%s], datagrams remote [%t]",
 		quicState.Version, quicState.SupportsDatagrams.Remote)
-	_, epoch := sv.state.BeginTransport(xudpstate.PhaseP2PReady)
+	epoch, ok := sv.state.BeginTransport(generation, xudpstate.PhaseP2PReady)
+	if !ok {
+		_ = conn.Close()
+		return nil, 0, false
+	}
 	return conn, epoch, true
 }
 
@@ -296,7 +313,9 @@ func (sv *XUDPVisitor) dialRelay(generation uint64) (*msg.Conn, uint64, bool) {
 	xl := xlog.FromContextSafe(sv.ctx)
 	xl.Infof("xudp relay: dialing relay visitor conn")
 
-	sv.state.SetPhase(xudpstate.PhaseRelayConnect)
+	if !sv.state.SetPhaseForGeneration(generation, xudpstate.PhaseRelayConnect) {
+		return nil, 0, false
+	}
 
 	rawConn, err := sv.dialRawVisitorConn(sv.cfg.GetBaseConfig())
 	if err != nil {
@@ -322,8 +341,26 @@ func (sv *XUDPVisitor) dialRelay(generation uint64) (*msg.Conn, uint64, bool) {
 	}
 
 	payloadConn := msg.NewConn(workConn, payloadRW)
-	_, epoch := sv.state.BeginTransport(xudpstate.PhaseRelayReady)
+	epoch, ok := sv.state.BeginTransport(generation, xudpstate.PhaseRelayReady)
+	if !ok {
+		_ = payloadConn.Close()
+		return nil, 0, false
+	}
 	return payloadConn, epoch, true
+}
+
+func (sv *XUDPVisitor) dialP2PForGeneration(generation uint64) (xudptransport.DatagramTransport, uint64, bool) {
+	if sv.p2PDialer != nil {
+		return sv.p2PDialer(generation)
+	}
+	return sv.dialP2P(generation)
+}
+
+func (sv *XUDPVisitor) dialRelayForGeneration(generation uint64) (*msg.Conn, uint64, bool) {
+	if sv.relayDialer != nil {
+		return sv.relayDialer(generation)
+	}
+	return sv.dialRelay(generation)
 }
 
 func (sv *XUDPVisitor) runActiveTransport(
@@ -409,7 +446,7 @@ func (sv *XUDPVisitor) runActiveTransport(
 func (sv *XUDPVisitor) runRelayWithP2PRecovery(generation uint64, firstPkt *msg.UDPPacket) bool {
 	xl := xlog.FromContextSafe(sv.ctx)
 
-	relayConn, relayEpoch, ok := sv.dialRelay(generation)
+	relayConn, relayEpoch, ok := sv.dialRelayForGeneration(generation)
 	if !ok {
 		xl.Warnf("xudp relay failed")
 		return false
@@ -422,7 +459,11 @@ func (sv *XUDPVisitor) runRelayWithP2PRecovery(generation uint64, firstPkt *msg.
 		sv.runActiveTransport(&relayActiveTransport{conn: relayConn}, generation, relayEpoch, firstPkt, relayCancel)
 	}()
 
-	ticker := time.NewTicker(5 * time.Second)
+	interval := sv.recoveryInterval
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -431,11 +472,15 @@ func (sv *XUDPVisitor) runRelayWithP2PRecovery(generation uint64, firstPkt *msg.
 			close(relayCancel)
 			return false
 		case <-relayDone:
-			sv.state.SetPhase(xudpstate.PhaseClosed)
+			sv.state.SetPhaseForTransport(generation, relayEpoch, xudpstate.PhaseClosed)
 			return false
 		case <-ticker.C:
-			conn, p2pEpoch, ok := sv.dialP2P(generation)
+			conn, p2pEpoch, ok := sv.dialP2PForGeneration(generation)
 			if !ok {
+				// dialP2P reports intermediate phases while probing. The relay
+				// transport remains live and authoritative, so restore its phase
+				// after every failed probe.
+				sv.state.SetPhaseForTransport(generation, relayEpoch, xudpstate.PhaseRelayReady)
 				continue
 			}
 

@@ -62,7 +62,10 @@ func TestRunActiveTransportDropsOversizedPacketWithoutClosingTransport(t *testin
 		closeCh:     make(chan struct{}),
 	}
 	generation := visitor.state.BeginSession()
-	_, epoch := visitor.state.BeginTransport(xudpstate.PhaseP2PReady)
+	epoch, ok := visitor.state.BeginTransport(generation, xudpstate.PhaseP2PReady)
+	if !ok {
+		t.Fatal("failed to start P2P transport")
+	}
 
 	transport := &fakeXUDPActiveTransport{
 		sendErrs: []error{fmt.Errorf("%w: test packet", xudptransport.ErrDatagramTooLarge)},

@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	stderrors "errors"
 	"net"
 	"reflect"
 	"strconv"
@@ -299,11 +300,16 @@ func (pxy *XUDPProxy) forwardP2PQUICDatagram(conn xudptransport.DatagramTranspor
 					xl.Warnf("xudp encode p2p quic data packet error: %v", err)
 					continue
 				}
-				if len(body) > conn.MaxDatagramPayloadSize() {
-					xl.Warnf("xudp p2p quic datagram too large: %d > %d", len(body), conn.MaxDatagramPayloadSize())
+				limit := conn.MaxDatagramPayloadSize()
+				if err := xudptransport.ValidateDatagramSizeAgainstLimit(len(body), limit); err != nil {
+					xl.Warnf("xudp p2p quic datagram too large: %d > %d", len(body), limit)
 					continue
 				}
 				if err := conn.SendDatagram(body); err != nil {
+					if stderrors.Is(err, xudptransport.ErrDatagramTooLarge) {
+						xl.Warnf("xudp p2p quic datagram too large: %v", err)
+						continue
+					}
 					xl.Warnf("xudp p2p quic write error: %v", err)
 					return
 				}

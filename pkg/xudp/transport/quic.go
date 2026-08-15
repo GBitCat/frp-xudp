@@ -5,6 +5,7 @@ package transport
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -27,18 +28,25 @@ const (
 type Options struct {
 	KeepalivePeriod time.Duration
 	MaxIdleTimeout  time.Duration
+
+	// enablePathMTUDiscovery is an internal-only experiment switch. It is
+	// intentionally unexported so PMTUD cannot become an XUDP user setting;
+	// production-created Options keep the conservative default disabled.
+	enablePathMTUDiscovery bool
 }
 
 func OptionsFromClientCfg(cfg *v1.ClientCommonConfig) Options {
 	if cfg == nil {
 		return Options{
-			KeepalivePeriod: defaultKeepalivePeriod,
-			MaxIdleTimeout:  defaultMaxIdleTimeout,
+			KeepalivePeriod:        defaultKeepalivePeriod,
+			MaxIdleTimeout:         defaultMaxIdleTimeout,
+			enablePathMTUDiscovery: experimentalPathMTUDiscoveryDefault,
 		}
 	}
 	return Options{
-		KeepalivePeriod: time.Duration(cfg.Transport.QUIC.KeepalivePeriod) * time.Second,
-		MaxIdleTimeout:  time.Duration(cfg.Transport.QUIC.MaxIdleTimeout) * time.Second,
+		KeepalivePeriod:        time.Duration(cfg.Transport.QUIC.KeepalivePeriod) * time.Second,
+		MaxIdleTimeout:         time.Duration(cfg.Transport.QUIC.MaxIdleTimeout) * time.Second,
+		enablePathMTUDiscovery: experimentalPathMTUDiscoveryDefault,
 	}
 }
 
@@ -53,14 +61,16 @@ func (o Options) quicConfig() *quic.Config {
 	}
 
 	return &quic.Config{
-		KeepAlivePeriod:         keepalive,
-		MaxIdleTimeout:          idleTimeout,
-		EnableDatagrams:         true,
-		MaxIncomingStreams:      -1,
-		MaxIncomingUniStreams:   -1,
-		HandshakeIdleTimeout:    10 * time.Second,
-		InitialPacketSize:       DefaultMaxDatagramPayloadSize,
-		DisablePathMTUDiscovery: true,
+		KeepAlivePeriod:       keepalive,
+		MaxIdleTimeout:        idleTimeout,
+		EnableDatagrams:       true,
+		MaxIncomingStreams:    -1,
+		MaxIncomingUniStreams: -1,
+		HandshakeIdleTimeout:  10 * time.Second,
+		InitialPacketSize:     DefaultQUICInitialPacketSize,
+		// PMTUD is opt-in for an internal experiment. The production default
+		// remains DisablePathMTUDiscovery=true for conservative XUDP sizing.
+		DisablePathMTUDiscovery: !o.enablePathMTUDiscovery,
 	}
 }
 
@@ -69,7 +79,17 @@ type quicDatagramTransport struct {
 }
 
 func (t *quicDatagramTransport) SendDatagram(p []byte) error {
-	return t.conn.SendDatagram(p)
+	if err := ValidateDatagramSizeAgainstLimit(len(p), t.MaxDatagramPayloadSize()); err != nil {
+		return err
+	}
+	if err := t.conn.SendDatagram(p); err != nil {
+		var tooLarge *quic.DatagramTooLargeError
+		if errors.As(err, &tooLarge) {
+			return fmt.Errorf("%w: size %d exceeds QUIC payload limit %d", ErrDatagramTooLarge, len(p), tooLarge.MaxDatagramPayloadSize)
+		}
+		return err
+	}
+	return nil
 }
 
 func (t *quicDatagramTransport) ReceiveDatagram(ctx context.Context) ([]byte, error) {
@@ -77,7 +97,7 @@ func (t *quicDatagramTransport) ReceiveDatagram(ctx context.Context) ([]byte, er
 }
 
 func (t *quicDatagramTransport) MaxDatagramPayloadSize() int {
-	return DefaultMaxDatagramPayloadSize
+	return ConservativeXUDPDatagramPayloadLimit
 }
 
 func (t *quicDatagramTransport) ConnectionState() quic.ConnectionState {

@@ -10,7 +10,7 @@ import (
 func BenchmarkValidateDatagramSize(b *testing.B) {
 	b.ReportAllocs()
 	for range b.N {
-		_ = ValidateDatagramSize(DefaultMaxDatagramPayloadSize)
+		_ = ValidateDatagramSize(ConservativeXUDPDatagramPayloadLimit)
 	}
 }
 

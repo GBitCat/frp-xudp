@@ -36,21 +36,52 @@ func (m *Machine) BeginSession() uint64 {
 	m.mu.Lock()
 	m.transportEpoch.Store(0)
 	m.phase = PhaseInit
+	generation := m.generation.Add(1)
 	m.mu.Unlock()
-	return m.generation.Add(1)
+	return generation
 }
 
-func (m *Machine) BeginTransport(phase Phase) (uint64, uint64) {
+// BeginTransport starts a transport only when generation is the current
+// session generation. Async dialers must provide their session generation so a
+// late result from an older session cannot replace the current transport.
+func (m *Machine) BeginTransport(generation uint64, phase Phase) (uint64, bool) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if generation != m.generation.Load() {
+		return 0, false
+	}
 	m.phase = phase
-	m.mu.Unlock()
-	return m.generation.Load(), m.transportEpoch.Add(1)
+	return m.transportEpoch.Add(1), true
 }
 
 func (m *Machine) SetPhase(phase Phase) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.phase = phase
+}
+
+// SetPhaseForGeneration changes the phase only for the current session.
+func (m *Machine) SetPhaseForGeneration(generation uint64, phase Phase) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if generation != m.generation.Load() {
+		return false
+	}
+	m.phase = phase
+	return true
+}
+
+// SetPhaseForTransport changes the phase only while the identified transport
+// remains current. This is used when a failed recovery probe must leave the
+// relay data plane authoritative.
+func (m *Machine) SetPhaseForTransport(generation, transportEpoch uint64, phase Phase) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if generation != m.generation.Load() || transportEpoch != m.transportEpoch.Load() {
+		return false
+	}
+	m.phase = phase
+	return true
 }
 
 func (m *Machine) Snapshot() (phase Phase, generation, transportEpoch uint64) {

@@ -16,9 +16,9 @@ func TestMachineTransitions(t *testing.T) {
 		t.Fatalf("BeginSession() = %d, want 1", gen)
 	}
 
-	gotGen, gotEpoch := m.BeginTransport(PhaseNATHolePrepare)
-	if gotGen != gen || gotEpoch != 1 {
-		t.Fatalf("BeginTransport() = (%d, %d), want (1, 1)", gotGen, gotEpoch)
+	gotEpoch, ok := m.BeginTransport(gen, PhaseNATHolePrepare)
+	if !ok || gotEpoch != 1 {
+		t.Fatalf("BeginTransport() = (%d, %t), want (1, true)", gotEpoch, ok)
 	}
 	if !m.IsCurrent(gen, gotEpoch) {
 		t.Fatal("IsCurrent() = false for current transport")
@@ -35,5 +35,51 @@ func TestMachineTransitions(t *testing.T) {
 	}
 	if m.IsCurrent(gen, gotEpoch) {
 		t.Fatal("old transport still considered current after new session")
+	}
+}
+
+func TestMachineTransportEpochInvalidatesPreviousTransport(t *testing.T) {
+	t.Parallel()
+
+	m := NewMachine()
+	generation := m.BeginSession()
+	oldEpoch, oldOK := m.BeginTransport(generation, PhaseRelayReady)
+	newEpoch, newOK := m.BeginTransport(generation, PhaseP2PReady)
+
+	if !oldOK || !newOK {
+		t.Fatalf("transport begins = (%t, %t), want true", oldOK, newOK)
+	}
+	if oldEpoch == newEpoch {
+		t.Fatalf("transport epoch did not advance: old=%d new=%d", oldEpoch, newEpoch)
+	}
+	if m.IsCurrent(generation, oldEpoch) {
+		t.Fatal("previous transport is still current after epoch switch")
+	}
+	if !m.IsCurrent(generation, newEpoch) {
+		t.Fatal("new transport is not current")
+	}
+	if phase, gotGeneration, gotEpoch := m.Snapshot(); phase != PhaseP2PReady || gotGeneration != generation || gotEpoch != newEpoch {
+		t.Fatalf("snapshot = (%s, %d, %d), want (%s, %d, %d)",
+			phase, gotGeneration, gotEpoch, PhaseP2PReady, generation, newEpoch)
+	}
+}
+
+func TestMachineRejectsStaleTransportGeneration(t *testing.T) {
+	t.Parallel()
+
+	m := NewMachine()
+	oldGeneration := m.BeginSession()
+	newGeneration := m.BeginSession()
+	if oldGeneration == newGeneration {
+		t.Fatal("session generation did not advance")
+	}
+
+	epoch, ok := m.BeginTransport(oldGeneration, PhaseP2PReady)
+	if ok || epoch != 0 {
+		t.Fatalf("stale BeginTransport() = (%d, %t), want (0, false)", epoch, ok)
+	}
+	phase, generation, currentEpoch := m.Snapshot()
+	if phase != PhaseInit || generation != newGeneration || currentEpoch != 0 {
+		t.Fatalf("snapshot after stale transport = (%s, %d, %d)", phase, generation, currentEpoch)
 	}
 }

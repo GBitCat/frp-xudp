@@ -19,7 +19,7 @@ type RawUDPTransport struct {
 
 func NewRawUDPTransport(conn *net.UDPConn, raddr *net.UDPAddr, maxDatagramPayloadSize int) DatagramTransport {
 	if maxDatagramPayloadSize <= 0 {
-		maxDatagramPayloadSize = DefaultMaxDatagramPayloadSize
+		maxDatagramPayloadSize = ConservativeXUDPDatagramPayloadLimit
 	}
 	return &RawUDPTransport{
 		conn:                   conn,
@@ -29,8 +29,8 @@ func NewRawUDPTransport(conn *net.UDPConn, raddr *net.UDPAddr, maxDatagramPayloa
 }
 
 func (t *RawUDPTransport) SendDatagram(p []byte) error {
-	if len(p) > t.maxDatagramPayloadSize {
-		return fmt.Errorf("raw udp datagram size %d exceeds limit %d", len(p), t.maxDatagramPayloadSize)
+	if err := ValidateDatagramSizeAgainstLimit(len(p), t.maxDatagramPayloadSize); err != nil {
+		return err
 	}
 	_, err := t.conn.WriteToUDP(p, t.raddr)
 	return err
