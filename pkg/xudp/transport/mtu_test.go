@@ -1,15 +1,25 @@
 package transport
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestValidateDatagramSize(t *testing.T) {
 	t.Parallel()
 
+	if err := ValidateDatagramSize(DefaultMaxDatagramPayloadSize - 1); err != nil {
+		t.Fatalf("ValidateDatagramSize(%d) error = %v", DefaultMaxDatagramPayloadSize-1, err)
+	}
 	if err := ValidateDatagramSize(DefaultMaxDatagramPayloadSize); err != nil {
 		t.Fatalf("ValidateDatagramSize(%d) error = %v", DefaultMaxDatagramPayloadSize, err)
 	}
-	if err := ValidateDatagramSize(DefaultMaxDatagramPayloadSize + 1); err == nil {
+	err := ValidateDatagramSize(DefaultMaxDatagramPayloadSize + 1)
+	if err == nil {
 		t.Fatal("ValidateDatagramSize() accepted oversized datagram")
+	}
+	if !errors.Is(err, ErrDatagramTooLarge) {
+		t.Fatalf("ValidateDatagramSize() error = %v, want ErrDatagramTooLarge", err)
 	}
 }
 

@@ -4,6 +4,7 @@ package visitor
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -55,7 +56,7 @@ func (t *p2pActiveTransport) SendPacket(pkt *msg.UDPPacket) error {
 		return err
 	}
 	if len(body) > t.conn.MaxDatagramPayloadSize() {
-		return fmt.Errorf("xudp datagram size %d exceeds limit %d", len(body), t.conn.MaxDatagramPayloadSize())
+		return fmt.Errorf("%w: size %d exceeds limit %d", xudptransport.ErrDatagramTooLarge, len(body), t.conn.MaxDatagramPayloadSize())
 	}
 	return t.conn.SendDatagram(body)
 }
@@ -339,8 +340,12 @@ func (sv *XUDPVisitor) runActiveTransport(
 			return
 		}
 		if err := transport.SendPacket(firstPkt); err != nil {
-			xl.Warnf("xudp active transport send first packet error: %v", err)
-			return
+			if stderrors.Is(err, xudptransport.ErrDatagramTooLarge) {
+				xl.Warnf("xudp active transport dropped oversized first packet: %v", err)
+			} else {
+				xl.Warnf("xudp active transport send first packet error: %v", err)
+				return
+			}
 		}
 	}
 
@@ -384,6 +389,10 @@ func (sv *XUDPVisitor) runActiveTransport(
 				return
 			}
 			if err := transport.SendPacket(pkt); err != nil {
+				if stderrors.Is(err, xudptransport.ErrDatagramTooLarge) {
+					xl.Warnf("xudp active transport dropped oversized packet: %v", err)
+					continue
+				}
 				return
 			}
 		}
