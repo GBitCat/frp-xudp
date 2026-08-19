@@ -17,3 +17,4 @@ serverName = "xudp-echo"
 secretKey = "xudp-secret"
 bindAddr = "0.0.0.0"
 bindPort = 9000
+transport.useCompression = true

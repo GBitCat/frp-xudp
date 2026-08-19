@@ -151,6 +151,11 @@ type NewWorkConn struct {
 
 type ReqWorkConn struct{}
 
+const (
+	XUDPWorkConnRoleRelay = "relay"
+	XUDPWorkConnRoleP2P   = "p2p"
+)
+
 type StartWorkConn struct {
 	ProxyName string `json:"proxy_name,omitempty"`
 	SrcAddr   string `json:"src_addr,omitempty"`
@@ -158,6 +163,7 @@ type StartWorkConn struct {
 	SrcPort   uint16 `json:"src_port,omitempty"`
 	DstPort   uint16 `json:"dst_port,omitempty"`
 	Error     string `json:"error,omitempty"`
+	XUDPRole  string `json:"xudp_role,omitempty"`
 }
 
 type NewVisitorConn struct {

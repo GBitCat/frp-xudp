@@ -16,3 +16,4 @@ type = "xudp"
 localIP = "127.0.0.1"
 localPort = 2000
 secretKey = "xudp-secret"
+transport.useCompression = true

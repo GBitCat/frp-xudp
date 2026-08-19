@@ -71,7 +71,32 @@ func TestGetWorkConnFromPoolLeavesRawTCPPayloadUnframed(t *testing.T) {
 	require.Equal(t, msg.StartWorkConn{ProxyName: "tcp"}, startMsg)
 }
 
+func TestXUDPStartWorkConnRoles(t *testing.T) {
+	cfg := &v1.XUDPProxyConfig{
+		ProxyBaseConfig: v1.ProxyBaseConfig{Name: "xudp", Type: string(v1.ProxyTypeXUDP)},
+	}
+
+	relay := getStartWorkConnFromPoolWithRole(t, cfg, wire.ProtocolV2, msg.XUDPWorkConnRoleRelay)
+	require.Equal(t, msg.XUDPWorkConnRoleRelay, relay.XUDPRole)
+
+	p2p := getStartWorkConnFromPoolWithRole(t, cfg, wire.ProtocolV2, msg.XUDPWorkConnRoleP2P)
+	require.Equal(t, msg.XUDPWorkConnRoleP2P, p2p.XUDPRole)
+
+	require.Equal(t, msg.XUDPWorkConnRoleRelay, startWorkConnRoleForUserConnection(string(v1.ProxyTypeXUDP)))
+	require.Empty(t, startWorkConnRoleForUserConnection(string(v1.ProxyTypeTCP)))
+	require.Empty(t, startWorkConnRoleForUserConnection(string(v1.ProxyTypeSUDP)))
+}
+
 func getStartWorkConnFromPool(t *testing.T, cfg v1.ProxyConfigurer, wireProtocol string) msg.StartWorkConn {
+	return getStartWorkConnFromPoolWithRole(t, cfg, wireProtocol, "")
+}
+
+func getStartWorkConnFromPoolWithRole(
+	t *testing.T,
+	cfg v1.ProxyConfigurer,
+	wireProtocol string,
+	role string,
+) msg.StartWorkConn {
 	t.Helper()
 
 	client, server := net.Pipe()
@@ -95,7 +120,7 @@ func getStartWorkConnFromPool(t *testing.T, cfg v1.ProxyConfigurer, wireProtocol
 
 	errCh := make(chan error, 1)
 	go func() {
-		conn, err := pxy.GetWorkConnFromPool(nil, nil)
+		conn, err := pxy.getWorkConnFromPool(nil, nil, role)
 		if conn != nil {
 			conn.Close()
 		}

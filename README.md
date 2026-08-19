@@ -6,7 +6,7 @@
 [![GitHub release](https://img.shields.io/github/tag/GBitCat/frp-xudp.svg?label=release)](https://github.com/GBitCat/frp-xudp/releases)
 
 > XUDP 为 frp 的**独立扩展**，未合入上游 fatedier/frp，仅在本仓库维护。
-> 版本号与上游发布对齐，可跟随上游发布 tag 升级，详见
+> `beta` 长期跟随 `upstream/dev`；上游发布 tag 仅作兼容性里程碑，详见
 > [UPSTREAM_SYNC.md](UPSTREAM_SYNC.md)。
 
 ## 核心特性

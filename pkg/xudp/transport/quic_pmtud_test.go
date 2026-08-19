@@ -2,10 +2,23 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
+
+	quic "github.com/quic-go/quic-go"
 )
+
+func TestPMTUDBuildDefaultRemainsExplicit(t *testing.T) {
+	t.Parallel()
+
+	opts := OptionsFromClientCfg(nil)
+	if opts.quicConfig().DisablePathMTUDiscovery == experimentalPathMTUDiscoveryDefault {
+		t.Fatalf("DisablePathMTUDiscovery = %t is inconsistent with experiment default %t",
+			opts.quicConfig().DisablePathMTUDiscovery, experimentalPathMTUDiscoveryDefault)
+	}
+}
 
 func TestExperimentalPMTUDLoopbackDatagramComparison(t *testing.T) {
 	t.Parallel()
@@ -44,6 +57,62 @@ func TestExperimentalPMTUDLoopbackDatagramComparison(t *testing.T) {
 			}
 
 			runLoopbackDatagramRoundTrip(t, opts)
+		})
+	}
+}
+
+func TestExperimentalPMTUDMeasuresLoopbackPayloadCeiling(t *testing.T) {
+	for _, enable := range []bool{false, true} {
+		enable := enable
+		name := "off"
+		if enable {
+			name = "on-experiment"
+		}
+		t.Run(name, func(t *testing.T) {
+			opts := Options{
+				KeepalivePeriod:        time.Second,
+				MaxIdleTimeout:         5 * time.Second,
+				enablePathMTUDiscovery: enable,
+			}
+			serverConn, clientConn, listener, client, server, _ := newQUICLifecyclePair(t, opts)
+			defer client.Close()
+			defer server.Close()
+			defer listener.Close()
+			defer serverConn.Close()
+			defer clientConn.Close()
+
+			clientQUIC := client.(*quicDatagramTransport)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			// SendDatagram is intentionally called directly here. This controlled
+			// probe bypasses the conservative XUDP application limit so the test
+			// can observe quic-go's actual path ceiling and DatagramTooLargeError.
+			candidates := []int{64, 512, 1024, 1100, 1150, 1200, 1280, 1400, 1472}
+			maxSuccess := 0
+			for _, size := range candidates {
+				err := clientQUIC.conn.SendDatagram(make([]byte, size))
+				if err != nil {
+					var tooLarge *quic.DatagramTooLargeError
+					if !errors.As(err, &tooLarge) {
+						t.Fatalf("SendDatagram(%d): %v", size, err)
+					}
+					t.Logf("PMTUD %s rejected payload=%d max=%d", name, size, tooLarge.MaxDatagramPayloadSize)
+					break
+				}
+				data, err := server.ReceiveDatagram(ctx)
+				if err != nil {
+					t.Fatalf("ReceiveDatagram(%d): %v", size, err)
+				}
+				if len(data) != size {
+					t.Fatalf("received payload=%d, want %d", len(data), size)
+				}
+				maxSuccess = size
+			}
+			if maxSuccess < 64 {
+				t.Fatalf("PMTUD %s did not deliver the baseline payload", name)
+			}
+			t.Logf("PMTUD %s measured loopback payload ceiling at least %d bytes", name, maxSuccess)
 		})
 	}
 }

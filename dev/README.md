@@ -1,7 +1,7 @@
 # frp-xudp 开发环境（dev/）
 
 本目录包含本仓库（frp + XUDP 扩展）的开发环境工具链与测试配置，
-与上游 frp 文件隔离，便于跟随上游发布 tag 升级。
+与上游 frp 文件隔离，便于在 `beta` 上持续跟随 `upstream/dev`。
 
 > XUDP 为 frp 的独立扩展，未合入上游 fatedier/frp，仅在本仓库维护。
 
@@ -19,7 +19,7 @@ dev/
 ```
 Dockerfile            # 开发环境镜像（Ubuntu 26.04 + Go 1.25.12 + Node 22）
 scripts/              # 代理拉镜像 / 构建镜像 / 上游升级脚本
-UPSTREAM_SYNC.md      # 跟随上游发布 tag 的升级维护说明
+UPSTREAM_SYNC.md      # beta 跟随 upstream/dev 的同步维护说明
 FRP_XUDP_Extension_Design_Document.md  # XUDP 设计文档
 ```
 

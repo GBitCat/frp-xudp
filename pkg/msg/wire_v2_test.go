@@ -102,7 +102,12 @@ func TestV2MessageFrameEncoding(t *testing.T) {
 }
 
 func TestDecodeV2MessageFrameInto(t *testing.T) {
-	in := &StartWorkConn{ProxyName: "tcp", SrcAddr: "127.0.0.1", SrcPort: 1234}
+	in := &StartWorkConn{
+		ProxyName: "xudp",
+		SrcAddr:   "127.0.0.1",
+		SrcPort:   1234,
+		XUDPRole:  XUDPWorkConnRoleP2P,
+	}
 	frame, err := EncodeV2MessageFrame(in)
 	require.NoError(t, err)
 

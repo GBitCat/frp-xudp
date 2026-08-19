@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	quic "github.com/quic-go/quic-go"
@@ -75,14 +77,28 @@ func (o Options) quicConfig() *quic.Config {
 }
 
 type quicDatagramTransport struct {
-	conn *quic.Conn
+	conn            *quic.Conn
+	packetConn      net.PacketConn
+	closePacketConn bool
+	closeOnce       sync.Once
+	closeErr        error
+	closed          atomic.Bool
 }
 
 func (t *quicDatagramTransport) SendDatagram(p []byte) error {
+	if t.closed.Load() {
+		return net.ErrClosed
+	}
 	if err := ValidateDatagramSizeAgainstLimit(len(p), t.MaxDatagramPayloadSize()); err != nil {
 		return err
 	}
 	if err := t.conn.SendDatagram(p); err != nil {
+		// CloseWithError closes quic-go's DATAGRAM queue and wakes senders
+		// blocked because that queue is full. Normalize that concurrent-close
+		// result without holding a transport lock across SendDatagram.
+		if t.closed.Load() {
+			return net.ErrClosed
+		}
 		var tooLarge *quic.DatagramTooLargeError
 		if errors.As(err, &tooLarge) {
 			return fmt.Errorf("%w: size %d exceeds QUIC payload limit %d", ErrDatagramTooLarge, len(p), tooLarge.MaxDatagramPayloadSize)
@@ -93,7 +109,14 @@ func (t *quicDatagramTransport) SendDatagram(p []byte) error {
 }
 
 func (t *quicDatagramTransport) ReceiveDatagram(ctx context.Context) ([]byte, error) {
-	return t.conn.ReceiveDatagram(ctx)
+	if t.closed.Load() {
+		return nil, net.ErrClosed
+	}
+	data, err := t.conn.ReceiveDatagram(ctx)
+	if err != nil && t.closed.Load() {
+		return nil, net.ErrClosed
+	}
+	return data, err
 }
 
 func (t *quicDatagramTransport) MaxDatagramPayloadSize() int {
@@ -113,7 +136,21 @@ func (t *quicDatagramTransport) VerifyPeerFingerprint(expected string) error {
 }
 
 func (t *quicDatagramTransport) Close() error {
-	return t.conn.CloseWithError(0, "")
+	t.closeOnce.Do(func() {
+		// Publish closure before closing the QUIC connection so new operations
+		// are rejected while CloseWithError wakes any blocked send or receive.
+		t.closed.Store(true)
+
+		// quic-go does not take ownership of the PacketConn passed to Dial or
+		// Listen. Dial transports own their socket. An accepted transport keeps
+		// a reference to the listener's socket but must not close it: the
+		// listener may still need that socket for future Accept calls.
+		t.closeErr = t.conn.CloseWithError(0, "")
+		if t.closePacketConn {
+			t.closeErr = errors.Join(t.closeErr, t.packetConn.Close())
+		}
+	})
+	return t.closeErr
 }
 
 func (t *quicDatagramTransport) LocalAddr() net.Addr {
@@ -129,22 +166,30 @@ func (t *quicDatagramTransport) RemoteAddr() net.Addr {
 func Dial(ctx context.Context, conn *net.UDPConn, raddr *net.UDPAddr, tlsConfig *tls.Config, opts Options) (DatagramTransport, error) {
 	quicConn, err := quic.Dial(ctx, conn, raddr, tlsConfig, opts.quicConfig())
 	if err != nil {
+		// Dial does not own or close the PacketConn when the handshake fails.
+		// The caller must not need to remember a separate failure cleanup path.
+		_ = conn.Close()
 		return nil, err
 	}
-	return &quicDatagramTransport{conn: quicConn}, nil
+	return &quicDatagramTransport{conn: quicConn, packetConn: conn, closePacketConn: true}, nil
 }
 
 type Listener struct {
-	inner *quic.Listener
+	inner      *quic.Listener
+	packetConn net.PacketConn
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 // Listen starts a QUIC DATAGRAM listener on the already punched UDP socket.
 func Listen(conn *net.UDPConn, tlsConfig *tls.Config, opts Options) (*Listener, error) {
 	listener, err := quic.Listen(conn, tlsConfig, opts.quicConfig())
 	if err != nil {
+		// Listen does not close the supplied PacketConn on setup failure.
+		_ = conn.Close()
 		return nil, err
 	}
-	return &Listener{inner: listener}, nil
+	return &Listener{inner: listener, packetConn: conn}, nil
 }
 
 func (l *Listener) Accept(ctx context.Context) (DatagramTransport, error) {
@@ -152,9 +197,14 @@ func (l *Listener) Accept(ctx context.Context) (DatagramTransport, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &quicDatagramTransport{conn: conn}, nil
+	return &quicDatagramTransport{conn: conn, packetConn: l.packetConn}, nil
 }
 
 func (l *Listener) Close() error {
-	return l.inner.Close()
+	l.closeOnce.Do(func() {
+		// Close the QUIC listener first so blocked Accept calls are released,
+		// then close the UDP socket that backed the NAT hole.
+		l.closeErr = errors.Join(l.inner.Close(), l.packetConn.Close())
+	})
+	return l.closeErr
 }

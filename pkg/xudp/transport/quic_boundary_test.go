@@ -74,10 +74,26 @@ func TestQUICOversizedDatagramKeepsConnection(t *testing.T) {
 	}
 
 	limit := client.MaxDatagramPayloadSize()
+	for _, size := range []int{limit - 1, limit} {
+		payload := bytes.Repeat([]byte{byte(size)}, size)
+		if err := client.SendDatagram(payload); err != nil {
+			t.Fatalf("SendDatagram(%d): %v", size, err)
+		}
+		t.Logf("payload_size=%d result=success connection=active", size)
+		received, err := server.ReceiveDatagram(ctx)
+		if err != nil {
+			t.Fatalf("ReceiveDatagram(%d): %v", size, err)
+		}
+		if !bytes.Equal(received, payload) {
+			t.Fatalf("received payload size=%d, want %d", len(received), size)
+		}
+	}
+
 	err = client.SendDatagram(make([]byte, limit+1))
 	if !errors.Is(err, ErrDatagramTooLarge) {
 		t.Fatalf("oversized SendDatagram() error = %v, want ErrDatagramTooLarge", err)
 	}
+	t.Logf("payload_size=%d result=oversize_drop connection=active", limit+1)
 
 	small := []byte("after-oversize")
 	if err := client.SendDatagram(small); err != nil {
@@ -90,4 +106,5 @@ func TestQUICOversizedDatagramKeepsConnection(t *testing.T) {
 	if !bytes.Equal(received, small) {
 		t.Fatalf("received %q, want %q", received, small)
 	}
+	t.Logf("payload_size=%d result=success_after_oversize connection=kept", len(small))
 }

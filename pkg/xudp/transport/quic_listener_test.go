@@ -48,6 +48,7 @@ func TestQUICListenerCloseUnblocksAccept(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 	_ = listener.Close()
+	assertUDPConnClosed(t, serverConn, serverConn.LocalAddr().(*net.UDPAddr))
 
 	select {
 	case err := <-acceptCh:

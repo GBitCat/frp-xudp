@@ -14,14 +14,12 @@ const (
 	DefaultQUICInitialPacketSize = 1200
 
 	// ConservativeXUDPDatagramPayloadLimit is the maximum encoded XUDP
-	// application datagram size accepted by the XUDP data plane. The encoded
-	// packet, including XUDP framing, must fit within this limit.
-	ConservativeXUDPDatagramPayloadLimit = 1200
-
-	// experimentalPathMTUDiscoveryDefault keeps PMTUD disabled in production.
-	// The unexported Options switch may enable it only for controlled
-	// experiments; it is not a user-facing XUDP configuration.
-	experimentalPathMTUDiscoveryDefault = false
+	// application datagram size accepted by the XUDP data plane. It is lower
+	// than the 1200-byte QUIC packet minimum because the encoded datagram still
+	// needs room for UDP, QUIC, connection ID, packet number, and AEAD overhead.
+	// PMTUD experiments may measure a larger path-specific ceiling, but the
+	// production default remains a fixed conservative limit.
+	ConservativeXUDPDatagramPayloadLimit = 1150
 )
 
 // ErrDatagramTooLarge identifies a packet-level size rejection. Callers can

@@ -145,6 +145,10 @@ func (pxy *BaseProxy) Close() {
 // GetWorkConnFromPool try to get a new work connections from pool
 // for quickly response, we immediately send the StartWorkConn message to frpc after take out one from pool
 func (pxy *BaseProxy) GetWorkConnFromPool(src, dst net.Addr) (workConn net.Conn, err error) {
+	return pxy.getWorkConnFromPool(src, dst, "")
+}
+
+func (pxy *BaseProxy) getWorkConnFromPool(src, dst net.Addr, role string) (workConn net.Conn, err error) {
 	xl := xlog.FromContextSafe(pxy.ctx)
 	// try all connections from the pool
 	for i := 0; i < pxy.poolCount+1; i++ {
@@ -180,6 +184,7 @@ func (pxy *BaseProxy) GetWorkConnFromPool(src, dst net.Addr) (workConn net.Conn,
 			DstAddr:   dstAddr,
 			DstPort:   uint16(dstPort),
 			Error:     "",
+			XUDPRole:  role,
 		})
 		if err != nil {
 			xl.Warnf("failed to send message to work connection from pool: %v, times: %d", err, i)
@@ -285,7 +290,8 @@ func (pxy *BaseProxy) handleUserTCPConnection(userConn net.Conn) {
 	}
 
 	// try all connections from the pool
-	workConn, err := pxy.GetWorkConnFromPool(userConn.RemoteAddr(), userConn.LocalAddr())
+	role := startWorkConnRoleForUserConnection(cfg.Type)
+	workConn, err := pxy.getWorkConnFromPool(userConn.RemoteAddr(), userConn.LocalAddr(), role)
 	if err != nil {
 		return
 	}
@@ -324,6 +330,13 @@ func (pxy *BaseProxy) handleUserTCPConnection(userConn net.Conn) {
 	metrics.Server.AddTrafficIn(name, proxyType, inCount)
 	metrics.Server.AddTrafficOut(name, proxyType, outCount)
 	xl.Debugf("join connections closed")
+}
+
+func startWorkConnRoleForUserConnection(proxyType string) string {
+	if proxyType == string(v1.ProxyTypeXUDP) {
+		return msg.XUDPWorkConnRoleRelay
+	}
+	return ""
 }
 
 func (pxy *BaseProxy) joinUserConnection(local io.ReadWriteCloser, userConn net.Conn, proxyType string, xl *xlog.Logger) (int64, int64, []error) {

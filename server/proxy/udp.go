@@ -21,9 +21,9 @@ import (
 	"net"
 	"reflect"
 	"strconv"
+	"sync"
 	"time"
 
-	"github.com/fatedier/golib/errors"
 	libio "github.com/fatedier/golib/io"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
@@ -57,10 +57,101 @@ type UDPProxy struct {
 	// readCh is used for reading packages from workConn
 	readCh chan *msg.UDPPacket
 
-	// checkCloseCh is used for watching if workConn is closed
-	checkCloseCh chan int
+	// reconnectCh notifies the dispatcher that the current workConn is closed.
+	reconnectCh chan struct{}
 
-	isClosed bool
+	// doneCh is the sole proxy-lifetime shutdown signal.
+	doneCh chan struct{}
+
+	workers      sync.WaitGroup
+	shutdownOnce sync.Once
+	releaseOnce  sync.Once
+	isClosed     bool
+}
+
+type udpWorkConnResult struct {
+	conn net.Conn
+	err  error
+}
+
+func (r udpWorkConnResult) close() {
+	if r.conn != nil {
+		_ = r.conn.Close()
+	}
+}
+
+type udpWorkConnRequest struct {
+	resultCh chan udpWorkConnResult
+	doneCh   chan struct{}
+
+	mu       sync.Mutex
+	canceled bool
+}
+
+func newUDPWorkConnRequest(getConn func() (net.Conn, error)) *udpWorkConnRequest {
+	req := &udpWorkConnRequest{
+		resultCh: make(chan udpWorkConnResult, 1),
+		doneCh:   make(chan struct{}),
+	}
+	// GetWorkConnFromPool has no cancellation API. Keep this request outside the
+	// main workers WaitGroup: its existing lower-level deadlines ensure eventual
+	// return, and this wrapper closes any work connection delivered after doneCh.
+	go func() {
+		defer close(req.doneCh)
+		conn, err := getConn()
+		result := udpWorkConnResult{conn: conn, err: err}
+
+		req.mu.Lock()
+		if req.canceled {
+			req.mu.Unlock()
+			result.close()
+			return
+		}
+		// There is one producer and the channel has capacity one. Keep this send
+		// explicitly non-blocking so shutdown can never leave the caller stuck.
+		select {
+		case req.resultCh <- result:
+			req.mu.Unlock()
+		default:
+			req.mu.Unlock()
+			result.close()
+		}
+	}()
+	return req
+}
+
+func (r *udpWorkConnRequest) wait(doneCh <-chan struct{}) (udpWorkConnResult, bool) {
+	select {
+	case result := <-r.resultCh:
+		// Prefer shutdown if it became visible at the same time as the result.
+		select {
+		case <-doneCh:
+			r.cancel()
+			result.close()
+			return udpWorkConnResult{}, false
+		default:
+			return result, true
+		}
+	case <-doneCh:
+		r.cancel()
+		return udpWorkConnResult{}, false
+	}
+}
+
+func (r *udpWorkConnRequest) cancel() {
+	r.mu.Lock()
+	r.canceled = true
+	var result *udpWorkConnResult
+	select {
+	case delivered := <-r.resultCh:
+		result = &delivered
+	default:
+	}
+	r.mu.Unlock()
+
+	if result != nil {
+		result.close()
+	}
 }
 
 func NewUDPProxy(baseProxy *BaseProxy) Proxy {
@@ -83,7 +174,7 @@ func (pxy *UDPProxy) Run() (remoteAddr string, err error) {
 	}
 	defer func() {
 		if err != nil {
-			pxy.rc.UDPPortManager.Release(pxy.realBindPort)
+			pxy.releasePort()
 		}
 	}()
 
@@ -105,7 +196,8 @@ func (pxy *UDPProxy) Run() (remoteAddr string, err error) {
 	pxy.udpConn = udpConn
 	pxy.sendCh = make(chan *msg.UDPPacket, 1024)
 	pxy.readCh = make(chan *msg.UDPPacket, 1024)
-	pxy.checkCloseCh = make(chan int)
+	pxy.reconnectCh = make(chan struct{}, 1)
+	pxy.doneCh = make(chan struct{})
 
 	// read message from workConn, if it returns any error, notify proxy to start a new workConn
 	workConnReaderFn := func(payloadConn *msg.Conn) {
@@ -120,11 +212,11 @@ func (pxy *UDPProxy) Run() (remoteAddr string, err error) {
 			if rawMsg, errRet = payloadConn.ReadMsg(); errRet != nil {
 				xl.Warnf("read from workConn for udp error: %v", errRet)
 				_ = payloadConn.Close()
-				// notify proxy to start a new work connection
-				// ignore error here, it means the proxy is closed
-				_ = errors.PanicToError(func() {
-					pxy.checkCloseCh <- 1
-				})
+				// Notify the dispatcher without racing with proxy shutdown.
+				select {
+				case pxy.reconnectCh <- struct{}{}:
+				case <-pxy.doneCh:
+				}
 				return
 			}
 			if err := payloadConn.SetReadDeadline(time.Time{}); err != nil {
@@ -135,15 +227,14 @@ func (pxy *UDPProxy) Run() (remoteAddr string, err error) {
 				xl.Tracef("udp work conn get ping message")
 				continue
 			case *msg.UDPPacket:
-				if errRet := errors.PanicToError(func() {
+				if pxy.deliverWorkConnPacket(m) {
 					xl.Tracef("get udp message from workConn, len: %d", len(m.Content))
-					pxy.readCh <- m
 					metrics.Server.AddTrafficOut(
 						pxy.GetName(),
 						pxy.GetConfigurer().GetBaseConfig().Type,
 						int64(len(m.Content)),
 					)
-				}); errRet != nil {
+				} else {
 					_ = payloadConn.Close()
 					xl.Infof("reader goroutine for udp work connection closed")
 					return
@@ -153,54 +244,80 @@ func (pxy *UDPProxy) Run() (remoteAddr string, err error) {
 	}
 
 	// send message to workConn
-	workConnSenderFn := func(payloadConn *msg.Conn, ctx context.Context) {
-		var errRet error
+	workConnSenderFn := func(payloadConn *msg.Conn, ctx context.Context, firstPacket *msg.UDPPacket) *msg.UDPPacket {
+		pendingPacket := firstPacket
 		for {
-			select {
-			case udpMsg, ok := <-pxy.sendCh:
-				if !ok {
+			if pendingPacket == nil {
+				select {
+				case pendingPacket = <-pxy.sendCh:
+				case <-ctx.Done():
 					xl.Infof("sender goroutine for udp work connection closed")
-					return
+					return nil
+				case <-pxy.doneCh:
+					xl.Infof("sender goroutine for udp work connection closed")
+					return nil
 				}
-				if errRet = payloadConn.WriteMsg(udpMsg); errRet != nil {
-					xl.Infof("sender goroutine for udp work connection closed: %v", errRet)
-					_ = payloadConn.Close()
-					return
-				}
-				xl.Tracef("send message to udp workConn, len: %d", len(udpMsg.Content))
-				metrics.Server.AddTrafficIn(
-					pxy.GetName(),
-					pxy.GetConfigurer().GetBaseConfig().Type,
-					int64(len(udpMsg.Content)),
-				)
-				continue
-			case <-ctx.Done():
-				xl.Infof("sender goroutine for udp work connection closed")
-				return
 			}
+
+			// Cancellation can race with receiving from sendCh. Preserve a packet
+			// already removed from the shared FIFO instead of attempting it on a
+			// connection the dispatcher is replacing.
+			select {
+			case <-ctx.Done():
+				return pendingPacket
+			case <-pxy.doneCh:
+				return pendingPacket
+			default:
+			}
+
+			if err := payloadConn.WriteMsg(pendingPacket); err != nil {
+				xl.Infof("sender goroutine for udp work connection closed: %v", err)
+				_ = payloadConn.Close()
+				return pendingPacket
+			}
+			xl.Tracef("send message to udp workConn, len: %d", len(pendingPacket.Content))
+			metrics.Server.AddTrafficIn(
+				pxy.GetName(),
+				pxy.GetConfigurer().GetBaseConfig().Type,
+				int64(len(pendingPacket.Content)),
+			)
+			pendingPacket = nil
 		}
 	}
 
+	pxy.workers.Add(2)
 	go func() {
+		defer pxy.workers.Done()
 		// Sleep a while for waiting control send the NewProxyResp to client.
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-time.After(500 * time.Millisecond):
+		case <-pxy.doneCh:
+			return
+		}
+		var pendingPacket *msg.UDPPacket
 		for {
-			workConn, err := pxy.GetWorkConnFromPool(nil, nil)
+			select {
+			case <-pxy.doneCh:
+				return
+			default:
+			}
+
+			request := newUDPWorkConnRequest(func() (net.Conn, error) {
+				return pxy.GetWorkConnFromPool(nil, nil)
+			})
+			result, ok := request.wait(pxy.doneCh)
+			if !ok {
+				return
+			}
+			workConn, err := result.conn, result.err
 			if err != nil {
-				time.Sleep(1 * time.Second)
-				// check if proxy is closed
+				result.close()
 				select {
-				case _, ok := <-pxy.checkCloseCh:
-					if !ok {
-						return
-					}
-				default:
+				case <-time.After(time.Second):
+				case <-pxy.doneCh:
+					return
 				}
 				continue
-			}
-			// close the old workConn and replace it with a new one
-			if pxy.workConn != nil {
-				pxy.workConn.Close()
 			}
 
 			var rwc io.ReadWriteCloser = workConn
@@ -222,21 +339,48 @@ func (pxy *UDPProxy) Run() (remoteAddr string, err error) {
 				})
 			}
 
-			pxy.workConn = netpkg.WrapReadWriteCloserToConn(rwc, workConn)
+			wrappedWorkConn := netpkg.WrapReadWriteCloserToConn(rwc, workConn)
 			// Plain UDP payload follows the negotiated wire protocol for message framing.
-			payloadRW, err := msg.NewUDPPacketReadWriter(pxy.workConn, pxy.wireProtocol, pxy.udpPacketCodec)
+			payloadRW, err := msg.NewUDPPacketReadWriter(wrappedWorkConn, pxy.wireProtocol, pxy.udpPacketCodec)
 			if err != nil {
 				xl.Errorf("create UDP packet read writer: %v", err)
-				pxy.workConn.Close()
+				wrappedWorkConn.Close()
 				continue
 			}
-			payloadConn := msg.NewConn(pxy.workConn, payloadRW)
+			if !pxy.replaceWorkConn(wrappedWorkConn) {
+				return
+			}
+			payloadConn := msg.NewConn(wrappedWorkConn, payloadRW)
 			ctx, cancel := context.WithCancel(context.Background())
-			go workConnReaderFn(payloadConn)
-			go workConnSenderFn(payloadConn, ctx)
-			_, ok := <-pxy.checkCloseCh
+			var connectionWorkers sync.WaitGroup
+			senderDone := make(chan *msg.UDPPacket, 1)
+			firstPacket := pendingPacket
+			pendingPacket = nil
+			connectionWorkers.Add(2)
+			pxy.workers.Add(2)
+			go func() {
+				defer connectionWorkers.Done()
+				defer pxy.workers.Done()
+				workConnReaderFn(payloadConn)
+			}()
+			go func() {
+				defer connectionWorkers.Done()
+				defer pxy.workers.Done()
+				senderDone <- workConnSenderFn(payloadConn, ctx, firstPacket)
+			}()
+			shuttingDown := false
+			select {
+			case <-pxy.reconnectCh:
+			case <-pxy.doneCh:
+				shuttingDown = true
+			}
 			cancel()
-			if !ok {
+			_ = payloadConn.Close()
+			// Join both workers before obtaining or publishing another workConn.
+			// This preserves single-consumer ownership of sendCh across reconnects.
+			connectionWorkers.Wait()
+			pendingPacket = <-senderDone
+			if shuttingDown {
 				return
 			}
 		}
@@ -245,30 +389,74 @@ func (pxy *UDPProxy) Run() (remoteAddr string, err error) {
 	// Read from user connections and send wrapped udp message to sendCh (forwarded by workConn).
 	// Client will transfor udp message to local udp service and waiting for response for a while.
 	// Response will be wrapped to be forwarded by work connection to server.
-	// Close readCh and sendCh at the end.
 	go func() {
 		udp.ForwardUserConn(udpConn, pxy.readCh, pxy.sendCh, int(pxy.serverCfg.UDPPacketSize))
+		// This goroutine may initiate shutdown, so remove it from the worker set
+		// before calling Close and waiting for all remaining workers.
+		pxy.workers.Done()
 		pxy.Close()
 	}()
 	return remoteAddr, nil
 }
 
-func (pxy *UDPProxy) Close() {
+func (pxy *UDPProxy) deliverWorkConnPacket(packet *msg.UDPPacket) bool {
+	select {
+	case pxy.readCh <- packet:
+		return true
+	case <-pxy.doneCh:
+		return false
+	}
+}
+
+func (pxy *UDPProxy) replaceWorkConn(workConn net.Conn) bool {
 	pxy.mu.Lock()
-	defer pxy.mu.Unlock()
-	if !pxy.isClosed {
+	if pxy.isClosed {
+		pxy.mu.Unlock()
+		_ = workConn.Close()
+		return false
+	}
+	oldWorkConn := pxy.workConn
+	pxy.workConn = workConn
+	pxy.mu.Unlock()
+
+	if oldWorkConn != nil {
+		_ = oldWorkConn.Close()
+	}
+	return true
+}
+
+func (pxy *UDPProxy) Close() {
+	pxy.initiateShutdown()
+	pxy.workers.Wait()
+	pxy.releasePort()
+}
+
+func (pxy *UDPProxy) initiateShutdown() {
+	pxy.shutdownOnce.Do(func() {
+		pxy.mu.Lock()
 		pxy.isClosed = true
+		if pxy.doneCh != nil {
+			close(pxy.doneCh)
+		}
+		workConn := pxy.workConn
+		pxy.workConn = nil
+		udpConn := pxy.udpConn
+		pxy.mu.Unlock()
 
 		pxy.BaseProxy.Close()
-		if pxy.workConn != nil {
-			pxy.workConn.Close()
+		if workConn != nil {
+			_ = workConn.Close()
 		}
-		pxy.udpConn.Close()
+		if udpConn != nil {
+			_ = udpConn.Close()
+		}
+	})
+}
 
-		// all channels only closed here
-		close(pxy.checkCloseCh)
-		close(pxy.readCh)
-		close(pxy.sendCh)
-	}
-	pxy.rc.UDPPortManager.Release(pxy.realBindPort)
+func (pxy *UDPProxy) releasePort() {
+	pxy.releaseOnce.Do(func() {
+		if pxy.realBindPort > 0 && pxy.rc != nil && pxy.rc.UDPPortManager != nil {
+			pxy.rc.UDPPortManager.Release(pxy.realBindPort)
+		}
+	})
 }

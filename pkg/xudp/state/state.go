@@ -86,8 +86,8 @@ func (m *Machine) SetPhaseForTransport(generation, transportEpoch uint64, phase 
 
 func (m *Machine) Snapshot() (phase Phase, generation, transportEpoch uint64) {
 	m.mu.RLock()
+	defer m.mu.RUnlock()
 	phase = m.phase
-	m.mu.RUnlock()
 	return phase, m.generation.Load(), m.transportEpoch.Load()
 }
 

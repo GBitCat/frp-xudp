@@ -3,7 +3,9 @@ package visitor
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,12 +15,13 @@ import (
 )
 
 type fakeXUDPActiveTransport struct {
-	mu       sync.Mutex
-	sendErrs []error
-	sends    int
-	sentCh   chan struct{}
-	closedCh chan struct{}
-	closeOne sync.Once
+	mu          sync.Mutex
+	sendErrs    []error
+	sends       int
+	sentCh      chan struct{}
+	releaseSend <-chan struct{}
+	closedCh    chan struct{}
+	closeOne    sync.Once
 }
 
 func (t *fakeXUDPActiveTransport) SendPacket(*msg.UDPPacket) error {
@@ -33,6 +36,9 @@ func (t *fakeXUDPActiveTransport) SendPacket(*msg.UDPPacket) error {
 	select {
 	case t.sentCh <- struct{}{}:
 	default:
+	}
+	if t.releaseSend != nil {
+		<-t.releaseSend
 	}
 	return nil
 }
@@ -108,6 +114,78 @@ func TestRunActiveTransportDropsOversizedPacketWithoutClosingTransport(t *testin
 	default:
 		t.Fatal("active transport was not closed")
 	}
+}
+
+func TestXUDPRelayCompressionResourcesRemainOwnedUntilCloseCompletes(t *testing.T) {
+	t.Parallel()
+
+	underlying := &blockingXUDPRelayCloser{
+		closeStarted: make(chan struct{}),
+		releaseClose: make(chan struct{}),
+	}
+	var recycleCalls atomic.Int32
+	recycled := make(chan struct{})
+	rwc := &xudpRelayReadWriteCloser{
+		ReadWriteCloser: underlying,
+		recycleFn: func() {
+			if recycleCalls.Add(1) == 1 {
+				close(recycled)
+			}
+		},
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- rwc.Close() }()
+
+	select {
+	case <-underlying.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("relay connection close did not start")
+	}
+	select {
+	case <-recycled:
+		t.Fatal("compression resources were recycled before connection close completed")
+	default:
+	}
+
+	close(underlying.releaseClose)
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("relay close returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("relay connection close did not complete")
+	}
+	select {
+	case <-recycled:
+	case <-time.After(time.Second):
+		t.Fatal("compression resources were not recycled after connection close")
+	}
+
+	if err := rwc.Close(); err != nil {
+		t.Fatalf("second relay close returned error: %v", err)
+	}
+	if got := recycleCalls.Load(); got != 1 {
+		t.Fatalf("recycle calls = %d, want 1", got)
+	}
+}
+
+type blockingXUDPRelayCloser struct {
+	closeStarted chan struct{}
+	releaseClose chan struct{}
+	closeOnce    sync.Once
+}
+
+func (c *blockingXUDPRelayCloser) Read([]byte) (int, error)    { return 0, io.EOF }
+func (c *blockingXUDPRelayCloser) Write(p []byte) (int, error) { return len(p), nil }
+
+func (c *blockingXUDPRelayCloser) Close() error {
+	c.closeOnce.Do(func() {
+		close(c.closeStarted)
+		<-c.releaseClose
+	})
+	return nil
 }
 
 var _ xudpActiveTransport = (*fakeXUDPActiveTransport)(nil)

@@ -13,10 +13,12 @@
 - XUDP P2P 数据面使用 QUIC DATAGRAM（RFC 9221），不使用 QUIC Stream。
 - NAT Hole Punching 继续复用 FRP 原有 `pkg/nathole`。
 - P2P 双方通过临时证书 SHA-256 fingerprint 做 peer authentication。
-- QUIC DATAGRAM 采用保守 1200 字节 payload 限制，避免依赖 IP fragmentation。
+- QUIC DATAGRAM 采用保守 1150 字节 encoded payload 限制，给 1200 字节 QUIC
+  初始包预留 UDP、QUIC 和 AEAD 开销，避免依赖 IP fragmentation。
 - Visitor 使用显式 P2P/Relay 状态机和 generation/transport epoch 隔离旧 transport。
 - 支持 P2P 失败自动 Relay、Relay 周期探测并恢复 P2P。
-- SUDP 保持 upstream FRP 原有中继和安全模型，不参与本次改造。
+- SUDP 保持 upstream FRP 原有中继协议和安全模型；本轮仅加固其并发关闭与资源
+  回收，不改变消息格式和数据流向。
 
 ------------------------------------------------------------------------
 
@@ -292,7 +294,7 @@ Relay 模式继续使用 FRP 原有 SUDP 风格 relay，不强制应用 QUIC。
 
 ## MTU
 
-默认最大 QUIC DATAGRAM payload 为 1200 字节。超过该值的数据报会
+默认最大 QUIC DATAGRAM encoded payload 为 1150 字节。超过该值的数据报会
 被丢弃并记录错误，不依赖底层 IP fragmentation。
 
 ## P2P模式
@@ -365,25 +367,49 @@ Probe 包需要：
 
 ------------------------------------------------------------------------
 
-# 13. 兼容官方 FRP
+# 13. 与官方 upstream 及旧版 frp-xudp 的兼容边界
 
-使用能力协商：
+XUDP 是本仓库维护的独立扩展，当前未进入官方
+`fatedier/frp` upstream。官方 upstream 的 `frpc`/`frps` 不提供
+`xudp` proxy 类型，因此不能把官方旧版本当作支持 XUDP 的兼容端，也不能
+声称新版本会与官方旧版本自动降级。
 
-``` json
-{
- "features":[
-   "xudp"
- ]
-}
-```
+当前 wire v1/v2 的 `ClientHello` 能力协商只包含消息 codec、UDP packet
+codec 和加密算法，不包含名为 `xudp` 的 capability 字段。
+`XUDPRole` 是 `StartWorkConn` 中的可选扩展字段，用于新版本 frpc/frps
+显式区分 P2P 与 Relay；它不是 capability，也不是能力协商结果。
 
-兼容策略：
+兼容行为如下：
 
-  frpc   frps   结果
-  ------ ------ ------
-  旧     旧     正常
-  新     新     XUDP
-  新     旧     降级
+| 组合 | 实际行为与边界 |
+| --- | --- |
+| 新版 frpc + 新版支持 XUDP 的 frps | 使用 `XUDPRole` 显式选择 P2P 或 Relay。 |
+| 新版 frpc + 旧版支持 XUDP 的 frps | 缺少 `XUDPRole` 时，新版 frpc 对旧 wire 行为使用 legacy probe；这不是能力协商，Relay 建立可能有首包探测延迟。 |
+| 旧版 frpc + 新版支持 XUDP 的 frps | 旧版 frpc 忽略未知的 `XUDPRole` 字段，仍使用旧式首包 heuristic；可能产生 Relay 延迟或误判，必须用真实旧二进制验证。 |
+| 任意 frp-xudp 版本 + 官方 upstream frps/frpc | 不保证支持 XUDP；官方端没有 XUDP proxy 类型，不应声称自动降级。 |
+
+滚动升级支持 XUDP 的 frp-xudp 部署时：
+
+1. 先升级所有参与 XUDP 的 frpc，包括代理端和 visitor 端。
+2. 保持旧版支持 XUDP 的 frps 运行，验证新版 frpc 的 legacy P2P 与 Relay
+   路径，并确认 Relay 首包行为。
+3. 再升级支持 XUDP 的 frps，使新客户端可以使用显式 `XUDPRole`。
+4. 最后逐步启用或扩大 XUDP 流量；不要把官方 upstream 端加入该兼容矩阵。
+
+当前 `pkg/msg/msg_test.go` 的 v1/v2“四象限”测试只证明：增加可选
+`xudp_role` 字段不会破坏简化旧结构的 JSON 解析，以及缺少该字段时当前
+结构可以解析旧帧。它不证明真实旧 frpc/frps 二进制互通、XUDP capability
+协商、P2P/Relay 运行时互通、首包延迟/保留、加密压缩组合或 Docker 滚动升级。
+
+在 Docker-only 条件下，未来可以补充以下真实旧 fork 二进制矩阵；这些测试
+不能替代 5G、Wi-Fi、公网 NAT、CGNAT、VPN 或真实移动网络验证：
+
+| 服务端 | 客户端 | 路径 | 目标 |
+| --- | --- | --- | --- |
+| 旧版支持 XUDP 的 frps | 新版 frpc | P2P、Relay | 验证 legacy probe、首包保留和建立延迟。 |
+| 新版支持 XUDP 的 frps | 旧版支持 XUDP 的 frpc | P2P、Relay | 验证旧 heuristic 的延迟、误判和字段忽略行为。 |
+| 新版支持 XUDP 的 frps | 新版 frpc | 显式 P2P、Relay | 验证 `XUDPRole` 路径。 |
+| 官方 upstream frps/frpc | 任一 XUDP 端 | XUDP 配置 | 明确记录为不支持/拒绝，不把失败误报为自动降级。 |
 
 ------------------------------------------------------------------------
 

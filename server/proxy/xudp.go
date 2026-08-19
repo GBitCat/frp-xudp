@@ -77,7 +77,7 @@ func (pxy *XUDPProxy) Run() (remoteAddr string, err error) {
 			case <-pxy.closeCh:
 				return
 			case sid := <-sidCh:
-				workConn, errRet := pxy.GetWorkConnFromPool(nil, nil)
+				workConn, errRet := pxy.getWorkConnFromPool(nil, nil, msg.XUDPWorkConnRoleP2P)
 				if errRet != nil {
 					xl.Warnf("get work conn for xudp p2p error: %v", errRet)
 					continue

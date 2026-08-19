@@ -1,6 +1,11 @@
 package state
 
-import "testing"
+import (
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"testing"
+)
 
 func TestMachineTransitions(t *testing.T) {
 	t.Parallel()
@@ -81,5 +86,60 @@ func TestMachineRejectsStaleTransportGeneration(t *testing.T) {
 	phase, generation, currentEpoch := m.Snapshot()
 	if phase != PhaseInit || generation != newGeneration || currentEpoch != 0 {
 		t.Fatalf("snapshot after stale transport = (%s, %d, %d)", phase, generation, currentEpoch)
+	}
+}
+
+func TestMachineSnapshotIsConsistentDuringConcurrentTransitions(t *testing.T) {
+	m := NewMachine()
+	const (
+		transitionCount = 100_000
+		readerCount     = 4
+	)
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var inconsistent atomic.Bool
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < transitionCount; i++ {
+			generation := m.BeginSession()
+			phase := PhaseNATHolePrepare
+			if generation%2 == 0 {
+				phase = PhaseP2PReady
+			}
+			if _, ok := m.BeginTransport(generation, phase); !ok {
+				inconsistent.Store(true)
+				return
+			}
+			runtime.Gosched()
+		}
+	}()
+
+	for i := 0; i < readerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for j := 0; j < transitionCount; j++ {
+				phase, generation, transportEpoch := m.Snapshot()
+				valid := (phase == PhaseInit && transportEpoch == 0) ||
+					(phase == PhaseNATHolePrepare && generation%2 == 1 && transportEpoch != 0) ||
+					(phase == PhaseP2PReady && generation%2 == 0 && transportEpoch != 0)
+				if !valid {
+					inconsistent.Store(true)
+					return
+				}
+				runtime.Gosched()
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	if inconsistent.Load() {
+		t.Fatal("Snapshot() returned an inconsistent state")
 	}
 }

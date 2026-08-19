@@ -21,8 +21,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fatedier/golib/errors"
-
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/proto/udp"
@@ -39,67 +37,259 @@ type SUDPVisitor struct {
 	readCh  chan *msg.UDPPacket
 	sendCh  chan *msg.UDPPacket
 
+	workers     sync.WaitGroup
+	lifecycleMu sync.Mutex
+	lifecycle   sudpLifecycleState
+
+	// listenUDPFn is nil in production. It allows startup/commit races to be
+	// tested with a real socket without making net.ListenUDP cancellable.
+	listenUDPFn func(string, *net.UDPAddr) (*net.UDPConn, error)
+	// beforeCommitFn is nil in production and only gates the test commit point.
+	beforeCommitFn func()
+
+	// These hooks are nil in production. They keep the dispatcher retry and
+	// connection-creation semantics directly testable without changing the
+	// connection or channel ownership model.
+	newVisitorConnFn func() (net.Conn, func(), error)
+	retryInterval    time.Duration
+
 	cfg *v1.SUDPVisitorConfig
+}
+
+type sudpLifecycleState uint8
+
+const (
+	sudpNotStarted sudpLifecycleState = iota
+	sudpStarting
+	sudpRunning
+	sudpClosed
+)
+
+type sudpVisitorConnResult struct {
+	conn      net.Conn
+	recycleFn func()
+	err       error
+}
+
+func (r sudpVisitorConnResult) recycle() {
+	if r.conn != nil {
+		_ = r.conn.Close()
+	}
+	if r.recycleFn != nil {
+		r.recycleFn()
+	}
+}
+
+type sudpVisitorConnRequest struct {
+	resultCh chan sudpVisitorConnResult
+	doneCh   chan struct{}
+
+	mu       sync.Mutex
+	canceled bool
+}
+
+func newSUDPVisitorConnRequest(
+	getConn func() (net.Conn, func(), error),
+) *sudpVisitorConnRequest {
+	req := &sudpVisitorConnRequest{
+		resultCh: make(chan sudpVisitorConnResult, 1),
+		doneCh:   make(chan struct{}),
+	}
+	// getNewVisitorConn ultimately uses an API without cancellation support. Do
+	// not add this goroutine to workers: the lower-level connection deadlines
+	// guarantee that it eventually returns, while this delivery wrapper owns and
+	// recycles any result that arrives after shutdown.
+	go func() {
+		defer close(req.doneCh)
+		conn, recycleFn, err := getConn()
+		result := sudpVisitorConnResult{conn: conn, recycleFn: recycleFn, err: err}
+
+		req.mu.Lock()
+		if req.canceled {
+			req.mu.Unlock()
+			result.recycle()
+			return
+		}
+		// There is one producer and the channel has capacity one. Keep this send
+		// explicitly non-blocking so a dispatcher exit can never strand it.
+		select {
+		case req.resultCh <- result:
+			req.mu.Unlock()
+		default:
+			req.mu.Unlock()
+			result.recycle()
+		}
+	}()
+	return req
+}
+
+func (r *sudpVisitorConnRequest) wait(closeCh <-chan struct{}) (sudpVisitorConnResult, bool) {
+	select {
+	case result := <-r.resultCh:
+		// Prefer shutdown if it became visible at the same time as the result.
+		select {
+		case <-closeCh:
+			r.cancel()
+			result.recycle()
+			return sudpVisitorConnResult{}, false
+		default:
+			return result, true
+		}
+	case <-closeCh:
+		r.cancel()
+		return sudpVisitorConnResult{}, false
+	}
+}
+
+func (r *sudpVisitorConnRequest) cancel() {
+	r.mu.Lock()
+	r.canceled = true
+	var result *sudpVisitorConnResult
+	select {
+	case delivered := <-r.resultCh:
+		result = &delivered
+	default:
+	}
+	r.mu.Unlock()
+
+	if result != nil {
+		result.recycle()
+	}
 }
 
 // SUDP Run start listen a udp port
 func (sv *SUDPVisitor) Run() (err error) {
+	sv.lifecycleMu.Lock()
+	if sv.lifecycle != sudpNotStarted {
+		state := sv.lifecycle
+		sv.lifecycleMu.Unlock()
+		if state == sudpClosed {
+			return fmt.Errorf("sudp visitor is closed")
+		}
+		return fmt.Errorf("sudp visitor is already running")
+	}
+	if sv.checkCloseCh == nil {
+		sv.checkCloseCh = make(chan struct{})
+	}
+	sv.lifecycle = sudpStarting
+	sv.lifecycleMu.Unlock()
+
 	xl := xlog.FromContextSafe(sv.ctx)
 
 	addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(sv.cfg.BindAddr, strconv.Itoa(sv.cfg.BindPort)))
 	if err != nil {
-		return fmt.Errorf("sudp ResolveUDPAddr error: %v", err)
+		return sv.failStartup(fmt.Errorf("sudp ResolveUDPAddr error: %v", err))
 	}
 
-	sv.udpConn, err = net.ListenUDP("udp", addr)
+	listenUDP := sv.listenUDPFn
+	if listenUDP == nil {
+		listenUDP = net.ListenUDP
+	}
+	udpConn, err := listenUDP("udp", addr)
 	if err != nil {
-		return fmt.Errorf("listen udp port %s error: %v", addr.String(), err)
+		return sv.failStartup(fmt.Errorf("listen udp port %s error: %v", addr.String(), err))
 	}
 
-	sv.sendCh = make(chan *msg.UDPPacket, 1024)
-	sv.readCh = make(chan *msg.UDPPacket, 1024)
+	readCh := make(chan *msg.UDPPacket, 1024)
+	sendCh := make(chan *msg.UDPPacket, 1024)
+	if sv.beforeCommitFn != nil {
+		sv.beforeCommitFn()
+	}
+
+	// Commit all shared resources and the worker count atomically. Close can
+	// mark the visitor closed while ListenUDP is in progress; in that case the
+	// temporary socket is never published and is closed by this goroutine.
+	sv.lifecycleMu.Lock()
+	if sv.lifecycle != sudpStarting {
+		sv.lifecycleMu.Unlock()
+		_ = udpConn.Close()
+		return fmt.Errorf("sudp visitor was closed during startup")
+	}
+	sv.udpConn = udpConn
+	sv.readCh = readCh
+	sv.sendCh = sendCh
+	sv.workers.Add(2)
+	sv.lifecycle = sudpRunning
+	sv.lifecycleMu.Unlock()
 
 	xl.Infof("sudp start to work, listen on %s", addr)
 
-	go sv.dispatcher()
-	go udp.ForwardUserConn(sv.udpConn, sv.readCh, sv.sendCh, int(sv.clientCfg.UDPPacketSize))
+	go func() {
+		defer sv.workers.Done()
+		sv.dispatcher()
+	}()
+	go func() {
+		defer sv.workers.Done()
+		udp.ForwardUserConn(udpConn, readCh, sendCh, int(sv.clientCfg.UDPPacketSize))
+	}()
 
 	return
+}
+
+func (sv *SUDPVisitor) failStartup(err error) error {
+	shouldCloseBase := false
+	sv.lifecycleMu.Lock()
+	if sv.lifecycle == sudpStarting {
+		sv.lifecycle = sudpClosed
+		if sv.checkCloseCh == nil {
+			sv.checkCloseCh = make(chan struct{})
+		}
+		close(sv.checkCloseCh)
+		shouldCloseBase = true
+	}
+	sv.lifecycleMu.Unlock()
+	if shouldCloseBase {
+		sv.BaseVisitor.Close()
+	}
+	return err
 }
 
 func (sv *SUDPVisitor) dispatcher() {
 	xl := xlog.FromContextSafe(sv.ctx)
 
-	var (
-		visitorConn net.Conn
-		recycleFn   func()
-		err         error
-
-		firstPacket *msg.UDPPacket
-	)
+	var pendingPacket *msg.UDPPacket
 
 	for {
-		select {
-		case firstPacket = <-sv.sendCh:
-			if firstPacket == nil {
+		if pendingPacket == nil {
+			select {
+			case pendingPacket = <-sv.sendCh:
+				if pendingPacket == nil {
+					xl.Infof("frpc sudp visitor proxy is closed")
+					return
+				}
+			case <-sv.checkCloseCh:
 				xl.Infof("frpc sudp visitor proxy is closed")
 				return
 			}
-		case <-sv.checkCloseCh:
+		}
+
+		request := newSUDPVisitorConnRequest(sv.newVisitorConn)
+		result, ok := request.wait(sv.checkCloseCh)
+		if !ok {
 			xl.Infof("frpc sudp visitor proxy is closed")
 			return
 		}
-
-		visitorConn, recycleFn, err = sv.getNewVisitorConn()
-		if err != nil {
-			xl.Warnf("newVisitorConn to frps error: %v, try to reconnect", err)
+		if result.err != nil {
+			// No worker was created, so pendingPacket has not crossed the
+			// delivery boundary. Keep it and retry after a cancellable,
+			// bounded delay. Do not consume sendCh while waiting: packets
+			// arriving behind it remain FIFO in sendCh for the worker.
+			result.recycle()
+			xl.Warnf("newVisitorConn to frps error: %v, try to reconnect", result.err)
+			if !sv.waitForConnRetry() {
+				return
+			}
 			continue
 		}
 
-		// visitorConn always be closed when worker done.
+		// Ownership crosses the delivery boundary here. worker writes this
+		// packet at most once; a failed/ambiguous WriteMsg is deliberately not
+		// returned to pendingPacket because replay could duplicate it remotely.
+		firstPacket := pendingPacket
+		pendingPacket = nil
 		func() {
-			defer recycleFn()
-			sv.worker(visitorConn, firstPacket)
+			defer result.recycle()
+			sv.worker(result.conn, firstPacket)
 		}()
 
 		select {
@@ -107,6 +297,28 @@ func (sv *SUDPVisitor) dispatcher() {
 			return
 		default:
 		}
+	}
+}
+
+func (sv *SUDPVisitor) newVisitorConn() (net.Conn, func(), error) {
+	if sv.newVisitorConnFn != nil {
+		return sv.newVisitorConnFn()
+	}
+	return sv.getNewVisitorConn()
+}
+
+func (sv *SUDPVisitor) waitForConnRetry() bool {
+	interval := sv.retryInterval
+	if interval <= 0 {
+		interval = time.Second
+	}
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-sv.checkCloseCh:
+		return false
 	}
 }
 
@@ -122,14 +334,30 @@ func (sv *SUDPVisitor) worker(workConn net.Conn, firstPacket *msg.UDPPacket) {
 	payloadConn := msg.NewConn(workConn, payloadRW)
 
 	wg := &sync.WaitGroup{}
-	wg.Add(2)
-	closeCh := make(chan struct{})
+	wg.Add(3)
+	workerCloseCh := make(chan struct{})
+	var closeWorkerOnce sync.Once
+	closeWorker := func() {
+		closeWorkerOnce.Do(func() { close(workerCloseCh) })
+	}
+
+	// Closing the proxy must interrupt both a blocked first-packet write and a
+	// blocked read. Closing payloadConn is the common cancellation mechanism for
+	// the two directions.
+	go func() {
+		defer wg.Done()
+		select {
+		case <-sv.checkCloseCh:
+		case <-workerCloseCh:
+		}
+		_ = payloadConn.Close()
+	}()
 
 	// udp service -> frpc -> frps -> frpc visitor -> user
 	workConnReaderFn := func(payloadConn *msg.Conn) {
 		defer func() {
+			closeWorker()
 			payloadConn.Close()
-			close(closeCh)
 			wg.Done()
 		}()
 
@@ -152,10 +380,13 @@ func (sv *SUDPVisitor) worker(workConn net.Conn, firstPacket *msg.UDPPacket) {
 				xl.Debugf("frpc visitor get ping message from frpc")
 				continue
 			case *msg.UDPPacket:
-				if errRet := errors.PanicToError(func() {
-					sv.readCh <- m
+				select {
+				case sv.readCh <- m:
 					xl.Tracef("frpc visitor get udp packet from workConn, len: %d", len(m.Content))
-				}); errRet != nil {
+				case <-sv.checkCloseCh:
+					xl.Infof("reader goroutine for udp work connection closed")
+					return
+				case <-workerCloseCh:
 					xl.Infof("reader goroutine for udp work connection closed")
 					return
 				}
@@ -166,6 +397,7 @@ func (sv *SUDPVisitor) worker(workConn net.Conn, firstPacket *msg.UDPPacket) {
 	// udp service <- frpc <- frps <- frpc visitor <- user
 	workConnSenderFn := func(payloadConn *msg.Conn) {
 		defer func() {
+			closeWorker()
 			payloadConn.Close()
 			wg.Done()
 		}()
@@ -181,18 +413,15 @@ func (sv *SUDPVisitor) worker(workConn net.Conn, firstPacket *msg.UDPPacket) {
 
 		for {
 			select {
-			case udpMsg, ok := <-sv.sendCh:
-				if !ok {
-					xl.Infof("sender goroutine for udp work connection closed")
-					return
-				}
-
+			case udpMsg := <-sv.sendCh:
 				if errRet = payloadConn.WriteMsg(udpMsg); errRet != nil {
 					xl.Warnf("sender goroutine for udp work connection closed: %v", errRet)
 					return
 				}
 				xl.Tracef("send udp package to workConn, len: %d", len(udpMsg.Content))
-			case <-closeCh:
+			case <-workerCloseCh:
+				return
+			case <-sv.checkCloseCh:
 				return
 			}
 		}
@@ -219,19 +448,25 @@ func (sv *SUDPVisitor) getNewVisitorConn() (net.Conn, func(), error) {
 }
 
 func (sv *SUDPVisitor) Close() {
-	sv.mu.Lock()
-	defer sv.mu.Unlock()
-
-	select {
-	case <-sv.checkCloseCh:
+	sv.lifecycleMu.Lock()
+	if sv.lifecycle == sudpClosed {
+		sv.lifecycleMu.Unlock()
+		sv.workers.Wait()
 		return
-	default:
-		close(sv.checkCloseCh)
 	}
+	sv.lifecycle = sudpClosed
+	if sv.checkCloseCh == nil {
+		sv.checkCloseCh = make(chan struct{})
+	}
+	close(sv.checkCloseCh)
+	udpConn := sv.udpConn
+	sv.lifecycleMu.Unlock()
+
+	// The state is closed before any external cleanup, so a concurrent Run
+	// cannot commit a new socket or add workers after this Wait.
 	sv.BaseVisitor.Close()
-	if sv.udpConn != nil {
-		sv.udpConn.Close()
+	if udpConn != nil {
+		_ = udpConn.Close()
 	}
-	close(sv.readCh)
-	close(sv.sendCh)
+	sv.workers.Wait()
 }
