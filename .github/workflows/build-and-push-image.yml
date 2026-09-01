@@ -7,10 +7,17 @@ on:
         description: 'Image tag (默认使用 git describe)'
         required: false
         default: ''
+        type: string
       platforms:
         description: 'Comma-separated platforms'
-        required: false
+        required: true
         default: 'linux/amd64,linux/arm64'
+        type: choice
+        options:
+          - 'linux/amd64,linux/arm64'
+          - 'linux/amd64'
+          - 'linux/arm64'
+          - 'linux/amd64,linux/arm/v7,linux/arm64,linux/ppc64le'
 
 permissions:
   contents: read
@@ -20,34 +27,83 @@ jobs:
   image:
     name: Build frpc/frps images
     runs-on: ubuntu-latest
-    env:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-      DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: '0'
+          persist-credentials: false
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
-      # 计算镜像 tag：优先用输入，否则 git describe
-      - name: Get Image Tag Name
+      - name: Validate build inputs
         run: |
-          INPUT_TAG="${{ github.event.inputs.tag }}"
-          if [ -n "$INPUT_TAG" ]; then
-            echo "TAG_NAME=$INPUT_TAG" >> "$GITHUB_ENV"
-          else
-            echo "TAG_NAME=$(git describe --tags --always)" >> "$GITHUB_ENV"
+          set -euo pipefail
+
+          TAG_NAME="${INPUT_TAG:-$(git describe --tags --always)}"
+          if [[ ! "$TAG_NAME" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "invalid image tag input" >&2
+            exit 1
           fi
+
+          case "$INPUT_PLATFORMS" in
+            linux/amd64|linux/arm64|linux/amd64,linux/arm64|linux/amd64,linux/arm/v7,linux/arm64,linux/ppc64le) ;;
+            *)
+              echo "unsupported platform input" >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            printf 'TAG_NAME=%s\n' "$TAG_NAME"
+            printf 'PLATFORMS=%s\n' "$INPUT_PLATFORMS"
+          } >> "$GITHUB_ENV"
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_PLATFORMS: ${{ inputs.platforms }}
+
+      - name: Detect Docker Hub credentials
+        id: dockerhub
+        run: |
+          set -euo pipefail
+          if [[ -n "$DOCKERHUB_USERNAME" || -n "$DOCKERHUB_PASSWORD" ]]; then
+            if [[ -z "$DOCKERHUB_USERNAME" || -z "$DOCKERHUB_PASSWORD" ]]; then
+              echo "Docker Hub credentials must be configured as a pair" >&2
+              exit 1
+            fi
+            printf 'enabled=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'enabled=false\n' >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Prepare image tags
+        run: |
+          set -euo pipefail
+          GHCR_REPO=$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          DOCKERHUB_OWNER=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          TAGS_FRPC="ghcr.io/${GHCR_REPO}/frpc:${TAG_NAME}"
+          TAGS_FRPS="ghcr.io/${GHCR_REPO}/frps:${TAG_NAME}"
+          if [[ "$DOCKERHUB_ENABLED" == true ]]; then
+            TAGS_FRPC="$TAGS_FRPC,${DOCKERHUB_OWNER}/frpc:${TAG_NAME}"
+            TAGS_FRPS="$TAGS_FRPS,${DOCKERHUB_OWNER}/frps:${TAG_NAME}"
+          fi
+          {
+            printf 'TAGS_FRPC=%s\n' "$TAGS_FRPC"
+            printf 'TAGS_FRPS=%s\n' "$TAGS_FRPS"
+          } >> "$GITHUB_ENV"
+        env:
+          DOCKERHUB_ENABLED: ${{ steps.dockerhub.outputs.enabled }}
 
       # ghcr.io 登录使用 GITHUB_TOKEN，无需配置 secrets
       - name: Login to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -55,28 +111,14 @@ jobs:
 
       # Docker Hub 仅在配置了 secrets 时才登录/推送
       - name: Login to DockerHub
-        if: ${{ env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_PASSWORD != '' }}
-        uses: docker/login-action@v4
+        if: ${{ steps.dockerhub.outputs.enabled == 'true' }}
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
-          username: ${{ env.DOCKERHUB_USERNAME }}
-          password: ${{ env.DOCKERHUB_PASSWORD }}
-
-      - name: Prepare Image Tags
-        run: |
-          echo "PLATFORMS=${{ github.event.inputs.platforms }}" >> "$GITHUB_ENV"
-          GHCR_REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          DOCKERHUB_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          TAGS_FRPC="ghcr.io/${GHCR_REPO}/frpc:${{ env.TAG_NAME }}"
-          TAGS_FRPS="ghcr.io/${GHCR_REPO}/frps:${{ env.TAG_NAME }}"
-          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_PASSWORD" ]; then
-            TAGS_FRPC="$TAGS_FRPC,${DOCKERHUB_OWNER}/frpc:${{ env.TAG_NAME }}"
-            TAGS_FRPS="$TAGS_FRPS,${DOCKERHUB_OWNER}/frps:${{ env.TAG_NAME }}"
-          fi
-          echo "TAGS_FRPC=$TAGS_FRPC" >> "$GITHUB_ENV"
-          echo "TAGS_FRPS=$TAGS_FRPS" >> "$GITHUB_ENV"
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
       - name: Build and push frpc
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: ./dockerfiles/Dockerfile-for-frpc
@@ -85,7 +127,7 @@ jobs:
           tags: ${{ env.TAGS_FRPC }}
 
       - name: Build and push frps
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: ./dockerfiles/Dockerfile-for-frps

@@ -35,7 +35,35 @@ node_modules/
 .claude/
 .sisyphus/
 .superpowers/
+.agents/
+.codex/
 
 # Local environment config (see .env.example)
 .env
-.env.local
+.env.*
+!.env.example
+
+# Local credentials and private key material
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.crt
+id_rsa*
+id_ed25519*
+credentials*.json
+service-account*.json
+kubeconfig*
+*.kubeconfig
+secret*.yaml
+secret*.yml
+secrets*.yaml
+secrets*.yml
+.npmrc
+.pypirc
+.netrc
+.aws/
+.ssh/
+.docker/

@@ -6,11 +6,13 @@ on:
       dry_run:
         description: '只构建不上传（true/false）'
         required: false
-        default: 'false'
+        default: false
+        type: boolean
       release_version:
         description: 'Release 标题/标签版本号，不影响包名'
         required: false
         default: '0.71.0-1'
+        type: string
 
 permissions:
   contents: write
@@ -20,17 +22,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: '0'
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.25'
+          cache: false
 
       - name: Set up Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
 
@@ -54,32 +58,33 @@ jobs:
       - name: Compute version
         id: version
         run: |
-          VERSION="$(./bin/frps --version)"
-          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          VERSION="$INPUT_RELEASE_VERSION"
+          if [[ -z "$VERSION" ]]; then
+            VERSION="$(./bin/frps --version)"
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "invalid release version input" >&2
+            exit 1
+          fi
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
           echo "package version: $VERSION"
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: frp-release-packages
-          path: release/packages/*
-          if-no-files-found: error
+        env:
+          INPUT_RELEASE_VERSION: ${{ inputs.release_version }}
 
       - name: Create GitHub release
-        if: ${{ github.event.inputs.dry_run != 'true' }}
+        if: ${{ inputs.dry_run == false }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          VERSION="${{ github.event.inputs.release_version }}"
-          if [ -z "$VERSION" ]; then
-            VERSION="${{ steps.version.outputs.VERSION }}"
-          fi
+          set -euo pipefail
           {
             echo "# frp-xudp v${VERSION}"
             echo ""
             cat dev/RELEASE_NOTES.md
           } > /tmp/release-notes.md
           gh release create "v${VERSION}" release/packages/* \
-            --repo "${{ github.repository }}" \
+            --repo "$GITHUB_REPOSITORY" \
             --title "frp-xudp ${VERSION} — XUDP P2P UDP Proxy" \
             --notes-file /tmp/release-notes.md

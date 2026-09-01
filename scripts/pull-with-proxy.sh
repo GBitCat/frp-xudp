@@ -44,7 +44,7 @@ CRANE="${CRANE_DIR}/crane"
 
 if [ ! -x "${CRANE}" ]; then
   mkdir -p "${CRANE_DIR}"
-  echo "==> 通过 ${PROXY} 下载 crane 工具"
+  echo "==> 通过已配置代理下载 crane 工具"
   curl -fsSL -x "${PROXY}" \
     "https://github.com/google/go-containerregistry/releases/latest/download/go-containerregistry_Linux_${CRANE_ARCH}.tar.gz" \
     -o "${CRANE_DIR}/crane.tar.gz"
@@ -54,7 +54,7 @@ fi
 
 OUT="${2:-/tmp/$(echo "${IMAGE}" | tr '/:' '__').tar}"
 
-echo "==> 通过 ${PROXY} 拉取 ${IMAGE}"
+echo "==> 通过已配置代理拉取 ${IMAGE}"
 HTTP_PROXY="${PROXY}" HTTPS_PROXY="${PROXY}" NO_PROXY="localhost,127.0.0.1,::1" \
   "${CRANE}" pull "${IMAGE}" "${OUT}"
 

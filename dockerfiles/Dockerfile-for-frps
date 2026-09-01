@@ -1,18 +1,25 @@
 FROM node:22 AS web-builder
 
-COPY web/package.json /web/package.json
+COPY web/package.json web/package-lock.json /web/
 COPY web/shared/ /web/shared/
 COPY web/frps/ /web/frps/
 WORKDIR /web
-RUN npm install
+RUN npm ci
 WORKDIR /web/frps
 RUN npm run build
 
 FROM golang:1.25 AS building
 
-COPY . /building
-COPY --from=web-builder /web/frps/dist /building/web/frps/dist
 WORKDIR /building
+COPY go.mod go.sum ./
+RUN go mod download
+COPY assets/ assets/
+COPY client/ client/
+COPY cmd/ cmd/
+COPY pkg/ pkg/
+COPY server/ server/
+COPY web/frps/embed.go web/frps/embed.go
+COPY --from=web-builder /web/frps/dist /building/web/frps/dist
 
 RUN env CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -tags frps -o bin/frps ./cmd/frps
 

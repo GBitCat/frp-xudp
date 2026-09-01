@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 # frp 开发环境镜像（基于 Ubuntu 26.04 LTS）
 #
 # 工具版本与 fatedier/frp 官方 CI（.github/workflows）保持一致：
@@ -7,25 +9,20 @@
 #   - make / git / build-essential 等基础工具
 #
 # 构建时建议配合 scripts/build-dev-image.sh 使用：
-#   docker build --network=host --build-arg PROXY=<proxy> -t frp-dev:ubuntu-26.04 .
-# 如需代理，通过 --build-arg PROXY=... 传入（默认不代理）。
+#   PROXY=http://host:port ./scripts/build-dev-image.sh
+# 脚本使用 Docker 预定义代理参数，代理不会写入最终镜像环境或默认构建历史。
 # 配置代理时，容器内所有下载（apt / go / npm）都会走该代理；
 # 且代理在宿主机上时，构建必须使用 --network=host。
 
 ARG BASE_IMAGE=ubuntu:26.04
 FROM ${BASE_IMAGE}
 
-ARG PROXY=
 ARG GO_VERSION=1.25.12
 ARG NODE_VERSION=22.23.2
 ARG GOLANGCI_LINT_VERSION=2.11.4
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
-    http_proxy=${PROXY} \
-    https_proxy=${PROXY} \
-    HTTP_PROXY=${PROXY} \
-    HTTPS_PROXY=${PROXY} \
     no_proxy=localhost,127.0.0.1,::1 \
     NO_PROXY=localhost,127.0.0.1,::1 \
     GOPATH=/go \
@@ -74,7 +71,7 @@ RUN set -eux; \
     go install github.com/daixiang0/gci@latest; \
     go install golang.org/x/tools/cmd/goimports@latest
 
-# npm 使用官方 registry（走镜像内置的 https_proxy）
+# npm 使用官方 registry
 RUN npm config set registry https://registry.npmjs.org/
 
 WORKDIR /workspace

@@ -29,7 +29,13 @@ TAG="${1:-frp-dev:ubuntu-26.04}"
 
 BUILD_ARGS=()
 if [ -n "$PROXY" ]; then
-  BUILD_ARGS+=(--build-arg "PROXY=${PROXY}")
+  export http_proxy="$PROXY" https_proxy="$PROXY" HTTP_PROXY="$PROXY" HTTPS_PROXY="$PROXY"
+  BUILD_ARGS+=(
+    --build-arg http_proxy
+    --build-arg https_proxy
+    --build-arg HTTP_PROXY
+    --build-arg HTTPS_PROXY
+  )
 fi
 
 docker build \
