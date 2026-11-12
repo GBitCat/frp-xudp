@@ -88,6 +88,7 @@ func NewVisitor(
 			cfg.GetBaseConfig().Plugin.Type,
 			plugin.PluginContext{
 				Name:           cfg.GetBaseConfig().Name,
+				UDPPacketSize:  int(clientCfg.UDPPacketSize),
 				Ctx:            ctx,
 				VnetController: helper.VNetController(),
 				SendConnToVisitor: func(conn net.Conn) {

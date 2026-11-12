@@ -18,6 +18,8 @@
 - **Peer Authentication**：通过 FRP control channel 交换 QUIC 证书
   fingerprint，拒绝伪造 peer
 - **断线恢复**：P2P 断开后自动切到 Relay，Relay 周期探测 P2P 并切回直连
+- **SOCKS5 TCP/UDP 插件**：`socks5_udp` 支持按请求选择目标地址和端口，
+  UDP 可通过 SUDP 中继或 XUDP 直连，详见[双端配置](doc/socks5-udp.md)
 - **会话管理**：Session Table（INIT / PUNCHING / CONNECTED / TIMEOUT），
   自动清理过期会话
 - **Keepalive**：QUIC keepalive 保持 P2P 连接与 NAT 映射存活
@@ -55,6 +57,7 @@ bindPort = 9000
 
 ## 文档
 
+- SOCKS5 TCP/UDP 插件：[doc/socks5-udp.md](doc/socks5-udp.md)
 - 扩展设计：[FRP_XUDP_Extension_Design_Document.md](FRP_XUDP_Extension_Design_Document.md)
 - 上游升级维护：[UPSTREAM_SYNC.md](UPSTREAM_SYNC.md)
 - 开发环境：[dev/README.md](dev/README.md)

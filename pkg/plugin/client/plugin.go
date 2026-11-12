@@ -25,12 +25,29 @@ import (
 	pp "github.com/pires/go-proxyproto"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
+	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/vnet"
 )
 
 type PluginContext struct {
-	Name           string
+	Name          string
+	ProxyType     string
+	UDPPacketSize int
+	// SharedStore is scoped to one proxy manager, including across config reloads.
+	SharedStore    *sync.Map
 	VnetController *vnet.Controller
+}
+
+type sharedStoreKey struct{}
+
+// WithSharedStore gives cooperating plugins a manager-scoped namespace.
+func WithSharedStore(ctx context.Context) context.Context {
+	return context.WithValue(ctx, sharedStoreKey{}, &sync.Map{})
+}
+
+func SharedStoreFromContext(ctx context.Context) *sync.Map {
+	store, _ := ctx.Value(sharedStoreKey{}).(*sync.Map)
+	return store
 }
 
 // Creators is used for create plugins to handle connections.
@@ -68,6 +85,15 @@ type Plugin interface {
 
 	Handle(ctx context.Context, connInfo *ConnectionInfo)
 	Close() error
+}
+
+// DatagramPlugin handles private UDP proxy payloads. A call owns a transport
+// route, while the plugin owns associations that can outlive that route.
+// Implementations must stop using sendCh when ctx is canceled and must not
+// close either channel.
+type DatagramPlugin interface {
+	Plugin
+	ServePackets(ctx context.Context, readCh <-chan *msg.UDPPacket, sendCh chan<- msg.Message)
 }
 
 type Listener struct {

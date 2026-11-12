@@ -59,6 +59,40 @@ func validateProxyBaseConfigForClient(c *v1.ProxyBaseConfig) error {
 		if err := ValidateClientPluginOptions(c.Plugin.ClientPluginOptions); err != nil {
 			return fmt.Errorf("plugin %s: %v", c.Plugin.Type, err)
 		}
+		if c.Plugin.Type == v1.PluginSocks5UDP {
+			if err := validateSocks5UDPProxy(c); err != nil {
+				return err
+			}
+		}
+		if (c.Type == "sudp" || c.Type == "xudp") && c.Plugin.Type != v1.PluginSocks5UDP {
+			return fmt.Errorf("%s only supports the socks5_udp datagram plugin", c.Type)
+		}
+	}
+	return nil
+}
+
+func validateSocks5UDPProxy(c *v1.ProxyBaseConfig) error {
+	options, ok := c.Plugin.ClientPluginOptions.(*v1.Socks5UDPPluginOptions)
+	if !ok || options == nil {
+		return errors.New("invalid socks5_udp options")
+	}
+	if c.Transport.ProxyProtocolVersion != "" {
+		return errors.New("socks5_udp does not support proxyProtocolVersion")
+	}
+	if len(options.Username) > 255 || len(options.Password) > 255 {
+		return errors.New("socks5_udp username/password must be at most 255 bytes")
+	}
+	switch c.Type {
+	case "stcp", "xtcp":
+		if options.UDPProxyName == "" || options.UDPProxyName == c.Name {
+			return errors.New("socks5_udp requires udpProxyName naming a separate SUDP/XUDP proxy")
+		}
+	case "sudp", "xudp":
+		if options.UDPProxyName != "" || options.Username != "" || options.Password != "" {
+			return errors.New("socks5_udp udpProxyName and credentials belong on the STCP/XTCP proxy")
+		}
+	default:
+		return errors.New("socks5_udp requires STCP/XTCP or SUDP/XUDP")
 	}
 	return nil
 }

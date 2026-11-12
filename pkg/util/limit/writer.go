@@ -24,12 +24,20 @@ import (
 type Writer struct {
 	w       io.Writer
 	limiter *rate.Limiter
+	ctx     context.Context
 }
 
 func NewWriter(w io.Writer, limiter *rate.Limiter) *Writer {
+	return NewWriterWithContext(context.Background(), w, limiter)
+}
+
+// NewWriterWithContext cancels rate-limit waits when ctx is done. The owner
+// must still close w to unblock any pending write to the underlying stream.
+func NewWriterWithContext(ctx context.Context, w io.Writer, limiter *rate.Limiter) *Writer {
 	return &Writer{
 		w:       w,
 		limiter: limiter,
+		ctx:     ctx,
 	}
 }
 
@@ -51,7 +59,7 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 		if b < len(p) {
 			end = b
 		}
-		err = w.limiter.WaitN(context.Background(), end)
+		err = w.limiter.WaitN(w.ctx, end)
 		if err != nil {
 			return
 		}

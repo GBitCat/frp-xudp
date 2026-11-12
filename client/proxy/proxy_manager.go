@@ -26,6 +26,7 @@ import (
 	"github.com/fatedier/frp/client/event"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/msg"
+	plugin "github.com/fatedier/frp/pkg/plugin/client"
 	"github.com/fatedier/frp/pkg/transport"
 	"github.com/fatedier/frp/pkg/util/xlog"
 	"github.com/fatedier/frp/pkg/vnet"
@@ -62,7 +63,7 @@ func NewManager(
 		closed:         false,
 		encryptionKey:  encryptionKey,
 		clientCfg:      clientCfg,
-		ctx:            ctx,
+		ctx:            plugin.WithSharedStore(ctx),
 		udpPacketCodec: udpPacketCodec,
 	}
 }

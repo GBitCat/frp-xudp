@@ -96,7 +96,7 @@ type BaseProxy struct {
 	vnetController *vnet.Controller
 	limiter        *rate.Limiter
 	// proxyPlugin is used to handle connections instead of dialing to local service.
-	// It's only validate for TCP protocol now.
+	// DatagramPlugin also supports private UDP proxies.
 	proxyPlugin        plugin.Plugin
 	inWorkConnCallback func(*v1.ProxyBaseConfig, net.Conn, *msg.StartWorkConn) /* continue */ bool
 
@@ -107,9 +107,18 @@ type BaseProxy struct {
 }
 
 func (pxy *BaseProxy) Run() error {
+	// Health-check recovery can run the same proxy again. Paired SOCKS5
+	// endpoints and their control sessions belong to the proxy's lifetime;
+	// config reload constructs a new proxy and closes the old one instead.
+	if pxy.baseCfg.Plugin.Type == v1.PluginSocks5UDP && pxy.proxyPlugin != nil {
+		return nil
+	}
 	if pxy.baseCfg.Plugin.Type != "" {
 		p, err := plugin.Create(pxy.baseCfg.Plugin.Type, plugin.PluginContext{
 			Name:           pxy.baseCfg.Name,
+			ProxyType:      pxy.baseCfg.Type,
+			UDPPacketSize:  int(pxy.clientCfg.UDPPacketSize),
+			SharedStore:    plugin.SharedStoreFromContext(pxy.ctx),
 			VnetController: pxy.vnetController,
 		}, pxy.baseCfg.Plugin.ClientPluginOptions)
 		if err != nil {
@@ -135,16 +144,30 @@ func (pxy *BaseProxy) Close() {
 // to return compression resources to the pool. It is safe to not call recycle,
 // in which case resources will be garbage collected normally.
 func (pxy *BaseProxy) wrapWorkConn(conn net.Conn, encKey []byte) (io.ReadWriteCloser, func(), error) {
+	return pxy.wrapWorkConnWithContext(pxy.ctx, conn, encKey)
+}
+
+func (pxy *BaseProxy) wrapWorkConnWithContext(ctx context.Context, conn net.Conn, encKey []byte) (io.ReadWriteCloser, func(), error) {
 	var rwc io.ReadWriteCloser = conn
+	var cancelLimit context.CancelFunc
 	if pxy.limiter != nil {
-		rwc = libio.WrapReadWriteCloser(limit.NewReader(conn, pxy.limiter), limit.NewWriter(conn, pxy.limiter), func() error {
-			return conn.Close()
-		})
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		ctx, cancelLimit = context.WithCancel(ctx)
+		rwc = libio.WrapReadWriteCloser(limit.NewReaderWithContext(ctx, conn, pxy.limiter),
+			limit.NewWriterWithContext(ctx, conn, pxy.limiter), func() error {
+				cancelLimit()
+				return conn.Close()
+			})
 	}
 	if pxy.baseCfg.Transport.UseEncryption {
 		var err error
 		rwc, err = libio.WithEncryption(rwc, encKey)
 		if err != nil {
+			if cancelLimit != nil {
+				cancelLimit()
+			}
 			conn.Close()
 			return nil, nil, fmt.Errorf("create encryption stream error: %w", err)
 		}
@@ -152,6 +175,15 @@ func (pxy *BaseProxy) wrapWorkConn(conn net.Conn, encKey []byte) (io.ReadWriteCl
 	var recycleFn func()
 	if pxy.baseCfg.Transport.UseCompression {
 		rwc, recycleFn = libio.WithCompressionFromPool(rwc)
+	}
+	if cancelLimit != nil {
+		// Cancel before closing encryption/compression wrappers: their cleanup
+		// may itself write to the rate-limited stream.
+		wrapped := rwc
+		rwc = libio.WrapReadWriteCloser(wrapped, wrapped, func() error {
+			cancelLimit()
+			return wrapped.Close()
+		})
 	}
 	return rwc, recycleFn, nil
 }
@@ -236,7 +268,7 @@ func (pxy *BaseProxy) HandleTCPWorkConnection(workConn net.Conn, m *msg.StartWor
 		libnet.WithTimeout(10*time.Second),
 	)
 	if err != nil {
-		workConn.Close()
+		remote.Close()
 		xl.Errorf("connect to local service [%s:%d] error: %v", baseCfg.LocalIP, baseCfg.LocalPort, err)
 		return
 	}
@@ -246,7 +278,7 @@ func (pxy *BaseProxy) HandleTCPWorkConnection(workConn net.Conn, m *msg.StartWor
 
 	if connInfo.ProxyProtocolHeader != nil {
 		if _, err := connInfo.ProxyProtocolHeader.WriteTo(localConn); err != nil {
-			workConn.Close()
+			remote.Close()
 			localConn.Close()
 			xl.Errorf("write proxy protocol header to local conn error: %v", err)
 			return

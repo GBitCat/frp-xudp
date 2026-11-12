@@ -22,10 +22,12 @@ import (
 
 const (
 	VisitorPluginVirtualNet = "virtual_net"
+	VisitorPluginSocks5UDP  = "socks5_udp"
 )
 
 var visitorPluginOptionsTypeMap = map[string]reflect.Type{
 	VisitorPluginVirtualNet: reflect.TypeFor[VirtualNetVisitorPluginOptions](),
+	VisitorPluginSocks5UDP:  reflect.TypeFor[Socks5UDPVisitorPluginOptions](),
 }
 
 type VisitorPluginOptions interface {
@@ -67,6 +69,29 @@ type VirtualNetVisitorPluginOptions struct {
 func (o *VirtualNetVisitorPluginOptions) Complete() {}
 
 func (o *VirtualNetVisitorPluginOptions) Clone() VisitorPluginOptions {
+	if o == nil {
+		return nil
+	}
+	out := *o
+	return &out
+}
+
+// Socks5UDPVisitorPluginOptions exposes a standard SOCKS5 listener over a
+// STCP/XTCP visitor and a local SUDP/XUDP visitor's UDP listener.
+type Socks5UDPVisitorPluginOptions struct {
+	Type           string `json:"type"`
+	BindAddr       string `json:"bindAddr,omitempty"`
+	BindPort       int    `json:"bindPort"`
+	UDPVisitorAddr string `json:"udpVisitorAddr"`
+}
+
+func (o *Socks5UDPVisitorPluginOptions) Complete() {
+	if o.BindAddr == "" {
+		o.BindAddr = "127.0.0.1"
+	}
+}
+
+func (o *Socks5UDPVisitorPluginOptions) Clone() VisitorPluginOptions {
 	if o == nil {
 		return nil
 	}
