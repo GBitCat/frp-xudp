@@ -17,8 +17,6 @@ package v1
 import (
 	"reflect"
 
-	"github.com/samber/lo"
-
 	"github.com/fatedier/frp/pkg/util/jsonx"
 	"github.com/fatedier/frp/pkg/util/util"
 )
@@ -30,6 +28,7 @@ const (
 	PluginHTTPS2HTTPS      = "https2https"
 	PluginHTTP2HTTP        = "http2http"
 	PluginSocks5           = "socks5"
+	PluginSocks5UDP        = "socks5_udp"
 	PluginStaticFile       = "static_file"
 	PluginUnixDomainSocket = "unix_domain_socket"
 	PluginTLS2Raw          = "tls2raw"
@@ -43,6 +42,7 @@ var clientPluginOptionsTypeMap = map[string]reflect.Type{
 	PluginHTTPS2HTTPS:      reflect.TypeFor[HTTPS2HTTPSPluginOptions](),
 	PluginHTTP2HTTP:        reflect.TypeFor[HTTP2HTTPPluginOptions](),
 	PluginSocks5:           reflect.TypeFor[Socks5PluginOptions](),
+	PluginSocks5UDP:        reflect.TypeFor[Socks5UDPPluginOptions](),
 	PluginStaticFile:       reflect.TypeFor[StaticFilePluginOptions](),
 	PluginUnixDomainSocket: reflect.TypeFor[UnixDomainSocketPluginOptions](),
 	PluginTLS2Raw:          reflect.TypeFor[TLS2RawPluginOptions](),
@@ -125,7 +125,7 @@ type HTTPS2HTTPPluginOptions struct {
 }
 
 func (o *HTTPS2HTTPPluginOptions) Complete() {
-	o.EnableHTTP2 = util.EmptyOr(o.EnableHTTP2, lo.ToPtr(true))
+	o.EnableHTTP2 = util.EmptyOr(o.EnableHTTP2, new(true))
 }
 
 func (o *HTTPS2HTTPPluginOptions) Clone() ClientPluginOptions {
@@ -149,7 +149,7 @@ type HTTPS2HTTPSPluginOptions struct {
 }
 
 func (o *HTTPS2HTTPSPluginOptions) Complete() {
-	o.EnableHTTP2 = util.EmptyOr(o.EnableHTTP2, lo.ToPtr(true))
+	o.EnableHTTP2 = util.EmptyOr(o.EnableHTTP2, new(true))
 }
 
 func (o *HTTPS2HTTPSPluginOptions) Clone() ClientPluginOptions {
@@ -184,6 +184,27 @@ type Socks5PluginOptions struct {
 	Type     string `json:"type,omitempty"`
 	Username string `json:"username,omitempty"`
 	Password string `json:"password,omitempty"`
+}
+
+// Socks5UDPPluginOptions configures one half of a paired SOCKS5 proxy.
+// STCP/XTCP handles authentication and control; SUDP/XUDP carries datagrams.
+type Socks5UDPPluginOptions struct {
+	Type     string `json:"type,omitempty"`
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+	// UDPProxyName is the local name of the SUDP/XUDP proxy in this frpc.
+	// It is required on the STCP/XTCP side and empty on the UDP side.
+	UDPProxyName string `json:"udpProxyName,omitempty"`
+}
+
+func (o *Socks5UDPPluginOptions) Complete() {}
+
+func (o *Socks5UDPPluginOptions) Clone() ClientPluginOptions {
+	if o == nil {
+		return nil
+	}
+	out := *o
+	return &out
 }
 
 func (o *Socks5PluginOptions) Complete() {}

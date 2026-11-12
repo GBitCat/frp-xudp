@@ -18,18 +18,50 @@
 
 ## 2. 当前上游基线
 
-2026-08-20 完成正式同步后的引用关系如下：
+2026-11-13 在 `beta` 同步 `upstream/dev`，保留双方完整历史。
 
-| 引用 | 提交 | 与同步合并点的关系 |
-| --- | --- | --- |
-| `beta` 的上游同步合并点 | `483e4668` | 已合入下列远端 `upstream/dev`；后续文档提交位于其上 |
-| `origin/dev` | `fd5fba91` | 是同步合并点的祖先；合并点单侧多 13 个提交 |
-| 本地及远端 `upstream/dev` | `758f07d5` | 是同步合并点的祖先；合并点单侧多 33 个提交 |
-| `upstream-v0.70.1^{}` | `fa3bcca2` | 与同步合并点已分叉：合并点侧 58、tag 侧 12 个提交 |
+| 项目 | 提交或版本 |
+| --- | --- |
+| 同步前上游基线 | `758f07d59e155e1eb044d3ca6bb3151fdab737dc` |
+| 本次上游目标 | `a2c975efb5e55102068065d61cfc17ffe34e939d` |
+| 本仓库合并前基线 | `bcf0e23c`（先将 `beta` 快进至已有的 `dev` 安全修复） |
+| 上游增量 | 48 个提交 |
+| frpc / frps 版本 | `0.72.0` |
+| Go / QUIC / yamux | Go 1.26（本地验证 1.26.11）、quic-go 0.65.0、yamux 0.3.0 |
 
-远端 `758f07d5` 先以合成树完成 Docker 全量相关包测试、目标包 Race Detector
-和 frps/frpc 构建，再由受保护同步脚本正式合入 `beta`；合并没有直接路径冲突，
-远端跟踪引用也已通过 CAS 前移。不需要合并 `upstream-v0.70.1`。
+同步脚本在 merge-tree 阶段发现 5 个冲突，安全退出且没有更新 tracking ref。
+随后审查并手动合并同一候选：
+
+- 三个 Actions 冲突保留手动触发、最小权限、禁用持久化凭据和缓存等已有
+  设置，同时吸收上游固定的 v7 action SHA 与 Go 1.26。
+- 两个生产 Dockerfile 使用完整 npm workspace manifests 和 `npm ci`，保留
+  本仓库的源码复制白名单；开发 Dockerfile 和测试构建默认版本也跟随 Go 1.26。
+- 本仓库 release workflow 同步工具链，默认版本改为读取构建产物，避免沿用
+  `0.71.0-1`；E2E 的 Ginkgo CLI 与 go.mod 的 2.34.0 对齐。
+- 保留 XUDP 注册、配置、fingerprint、wire 字段、P2P/Relay 状态机和关闭保护。
+  处理新版 lint 对本仓库代码的格式及 Go 写法要求。
+- 回归发现 quic-go 0.65.0 的 `Listener.Close()` 不保证底层 UDP 端口立即
+  释放。frps 改为显式拥有 QUIC socket 并在关闭监听器后关闭 socket，保留
+  启动失败时的即时端口回收；新增正常关闭和重复关闭的端口复用检查。
+
+本次容器验证记录：
+
+- 上游同步脚本：30/30；隔离脚本硬化：107/107。
+- Go 包测试、XUDP/消息/UDP/客户端/服务端 Race Detector、新版 lint（0 issues）通过。
+- QUIC 启动失败清理和正常关闭端口回收连续 20 轮通过；PMTUD 实验构建标签测试通过。
+- 前端 lint、15 项单测、frpc/frps dashboard 构建通过。
+- 三容器 P2P 尝试中 STUN 超时，自动回退 Relay 后三包收发成功；P2P 路径
+  未确认，不能记为 PASS。最终强制 Relay 路径确认，连续三包 3/3 通过。
+- E2E：261 PASS、2 SKIPPED、0 FAIL（263 项，Ginkgo 2.34.0）。
+- Actions YAML 解析通过；5 个 workflow 均仅手动触发，checkout 不保留凭据。
+
+本地日志前缀：`/tmp/frp-upstream-20261113-`，其中 `final-go.log`、
+`sync-tests.log`、`hardening-final.log`、`web-final.log`、`e2e-final.log`、
+`relay-final.log` 为成功验收记录；`p2p-final.log` 与 `p2p-proxy.log` /
+`p2p-visitor.log` 保留 P2P 未确认的失败路径证据。这些是本机诊断文件，不随仓库发布。
+首次 E2E 受旧开发镜像中的 `http_proxy` 影响，frpc 将其作为控制连接代理；
+回归运行须清除测试进程的代理变量，依赖下载可继续使用代理。旧的前端构建目录
+存在不同 UID 的文件，本次从容器内干净副本完成前端验收。
 
 源码目录是 `frp-src/`，开发容器 `frp-dev` 将其挂载为 `/workspace/src`。
 

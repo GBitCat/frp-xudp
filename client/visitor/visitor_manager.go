@@ -129,6 +129,7 @@ func (vm *Manager) startVisitor(cfg v1.VisitorConfigurer) (err error) {
 	}
 	err = visitor.Run()
 	if err != nil {
+		visitor.Close()
 		xl.Warnf("start error: %v", err)
 	} else {
 		vm.visitors[name] = visitor

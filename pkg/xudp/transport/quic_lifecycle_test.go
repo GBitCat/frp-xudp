@@ -161,7 +161,7 @@ func TestQUICTransportCloseUnblocksFullDatagramSendQueue(t *testing.T) {
 	results := make(chan error, senderCount)
 	var senders sync.WaitGroup
 	senders.Add(senderCount)
-	for i := 0; i < senderCount; i++ {
+	for range senderCount {
 		go func() {
 			defer senders.Done()
 			ready.Add(1)
@@ -289,14 +289,14 @@ func TestQUICTransportConcurrentDoubleClose(t *testing.T) {
 
 	start := make(chan struct{})
 	results := make(chan error, 2)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		go func() {
 			<-start
 			results <- client.Close()
 		}()
 	}
 	close(start)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if err := <-results; err != nil {
 			t.Fatalf("concurrent Close error = %v", err)
 		}

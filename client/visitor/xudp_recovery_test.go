@@ -9,10 +9,11 @@ import (
 	"testing"
 	"time"
 
+	quic "github.com/quic-go/quic-go"
+
 	"github.com/fatedier/frp/pkg/msg"
 	xudpstate "github.com/fatedier/frp/pkg/xudp/state"
 	xudptransport "github.com/fatedier/frp/pkg/xudp/transport"
-	quic "github.com/quic-go/quic-go"
 )
 
 func newRecoveryTestVisitor() *XUDPVisitor {

@@ -803,7 +803,7 @@ func (sv *XUDPVisitor) runRelayWithP2PRecovery(generation uint64, firstPkt *msg.
 
 	wait := sv.recoveryWait
 	if wait == nil {
-		wait = func(delay time.Duration) <-chan time.Time { return time.After(delay) }
+		wait = time.After
 	}
 	probeAttempt := 0
 

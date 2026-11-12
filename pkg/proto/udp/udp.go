@@ -268,9 +268,7 @@ func managedForwarder(
 	}
 
 	startReader := func(key string, raddr *net.UDPAddr, entry *managedConn) {
-		readerGroup.Add(1)
-		go func() {
-			defer readerGroup.Done()
+		readerGroup.Go(func() {
 			defer removeAndClose(key, entry)
 
 			buf := pool.GetBuf(bufSize)
@@ -298,7 +296,7 @@ func managedForwarder(
 				default:
 				}
 			}
-		}()
+		})
 	}
 
 	closeAll := func() {

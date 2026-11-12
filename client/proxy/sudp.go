@@ -17,6 +17,7 @@
 package proxy
 
 import (
+	"context"
 	"net"
 	"reflect"
 	"strconv"
@@ -27,6 +28,7 @@ import (
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/msg"
+	plugin "github.com/fatedier/frp/pkg/plugin/client"
 	"github.com/fatedier/frp/pkg/proto/udp"
 	netpkg "github.com/fatedier/frp/pkg/util/net"
 )
@@ -42,7 +44,10 @@ type SUDPProxy struct {
 
 	localAddr *net.UDPAddr
 
-	closeCh chan struct{}
+	closeCh       chan struct{}
+	pluginConns   map[net.Conn]context.CancelFunc
+	pluginWorkers sync.WaitGroup
+	closeOnce     sync.Once
 }
 
 func NewSUDPProxy(baseProxy *BaseProxy, cfg v1.ProxyConfigurer) Proxy {
@@ -58,6 +63,9 @@ func NewSUDPProxy(baseProxy *BaseProxy, cfg v1.ProxyConfigurer) Proxy {
 }
 
 func (pxy *SUDPProxy) Run() (err error) {
+	if pxy.cfg.Plugin.Type != "" {
+		return pxy.runDatagramPlugin()
+	}
 	pxy.localAddr, err = net.ResolveUDPAddr("udp", net.JoinHostPort(pxy.cfg.LocalIP, strconv.Itoa(pxy.cfg.LocalPort)))
 	if err != nil {
 		return
@@ -66,17 +74,46 @@ func (pxy *SUDPProxy) Run() (err error) {
 }
 
 func (pxy *SUDPProxy) Close() {
-	pxy.mu.Lock()
-	defer pxy.mu.Unlock()
-	select {
-	case <-pxy.closeCh:
-		return
-	default:
+	pxy.closeOnce.Do(func() {
+		pxy.mu.Lock()
 		close(pxy.closeCh)
-	}
+		for conn, cancel := range pxy.pluginConns {
+			cancel()
+			_ = conn.Close()
+		}
+		pxy.mu.Unlock()
+		pxy.pluginWorkers.Wait()
+		pxy.BaseProxy.Close()
+	})
 }
 
 func (pxy *SUDPProxy) InWorkConn(conn net.Conn, _ *msg.StartWorkConn) {
+	if _, ok := pxy.proxyPlugin.(plugin.DatagramPlugin); ok {
+		pxy.mu.Lock()
+		select {
+		case <-pxy.closeCh:
+			pxy.mu.Unlock()
+			_ = conn.Close()
+			return
+		default:
+		}
+		ctx, cancel := context.WithCancel(pxy.ctx)
+		if pxy.pluginConns == nil {
+			pxy.pluginConns = make(map[net.Conn]context.CancelFunc)
+		}
+		pxy.pluginConns[conn] = cancel
+		pxy.pluginWorkers.Add(1)
+		pxy.mu.Unlock()
+		defer func() {
+			cancel()
+			pxy.mu.Lock()
+			delete(pxy.pluginConns, conn)
+			pxy.mu.Unlock()
+			pxy.pluginWorkers.Done()
+		}()
+		pxy.serveDatagramWorkConn(ctx, conn)
+		return
+	}
 	xl := pxy.xl
 	xl.Infof("incoming a new work connection for sudp proxy, %s", conn.RemoteAddr().String())
 

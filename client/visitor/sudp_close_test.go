@@ -59,11 +59,9 @@ func TestSUDPVisitorConcurrentCloseUnblocksWorkerProducer(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 32 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			sv.Close()
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -109,11 +107,9 @@ func TestSUDPVisitorConcurrentCloseUnblocksFirstPacketAndJoinsWorker(t *testing.
 		defer close(closeDone)
 		var wg sync.WaitGroup
 		for range 32 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				sv.Close()
-			}()
+			})
 		}
 		wg.Wait()
 	}()
@@ -256,11 +252,9 @@ func TestSUDPVisitorConcurrentRunAndCloseHasOneOwner(t *testing.T) {
 
 		var closeWG sync.WaitGroup
 		for range 8 {
-			closeWG.Add(1)
-			go func() {
-				defer closeWG.Done()
+			closeWG.Go(func() {
 				sv.Close()
-			}()
+			})
 		}
 		closeWG.Wait()
 		close(releaseCommit)

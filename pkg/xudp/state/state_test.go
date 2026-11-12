@@ -100,11 +100,9 @@ func TestMachineSnapshotIsConsistentDuringConcurrentTransitions(t *testing.T) {
 	var wg sync.WaitGroup
 	var inconsistent atomic.Bool
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		<-start
-		for i := 0; i < transitionCount; i++ {
+		for range transitionCount {
 			generation := m.BeginSession()
 			phase := PhaseNATHolePrepare
 			if generation%2 == 0 {
@@ -116,14 +114,12 @@ func TestMachineSnapshotIsConsistentDuringConcurrentTransitions(t *testing.T) {
 			}
 			runtime.Gosched()
 		}
-	}()
+	})
 
-	for i := 0; i < readerCount; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range readerCount {
+		wg.Go(func() {
 			<-start
-			for j := 0; j < transitionCount; j++ {
+			for range transitionCount {
 				phase, generation, transportEpoch := m.Snapshot()
 				valid := (phase == PhaseInit && transportEpoch == 0) ||
 					(phase == PhaseNATHolePrepare && generation%2 == 1 && transportEpoch != 0) ||
@@ -134,7 +130,7 @@ func TestMachineSnapshotIsConsistentDuringConcurrentTransitions(t *testing.T) {
 				}
 				runtime.Gosched()
 			}
-		}()
+		})
 	}
 
 	close(start)

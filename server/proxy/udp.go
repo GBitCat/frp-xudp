@@ -334,9 +334,7 @@ func (pxy *UDPProxy) Run() (remoteAddr string, err error) {
 			}
 
 			if pxy.GetLimiter() != nil {
-				rwc = libio.WrapReadWriteCloser(limit.NewReader(rwc, pxy.GetLimiter()), limit.NewWriter(rwc, pxy.GetLimiter()), func() error {
-					return rwc.Close()
-				})
+				rwc = libio.WrapReadWriteCloser(limit.NewReader(rwc, pxy.GetLimiter()), limit.NewWriter(rwc, pxy.GetLimiter()), rwc.Close)
 			}
 
 			wrappedWorkConn := netpkg.WrapReadWriteCloserToConn(rwc, workConn)
@@ -355,7 +353,6 @@ func (pxy *UDPProxy) Run() (remoteAddr string, err error) {
 			var connectionWorkers sync.WaitGroup
 			senderDone := make(chan *msg.UDPPacket, 1)
 			firstPacket := pendingPacket
-			pendingPacket = nil
 			connectionWorkers.Add(2)
 			pxy.workers.Add(2)
 			go func() {

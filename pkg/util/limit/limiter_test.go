@@ -16,9 +16,12 @@ package limit
 
 import (
 	"bytes"
+	"context"
+	"io"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/time/rate"
@@ -60,6 +63,36 @@ func TestReaderAndWriterRejectInvalidBurst(t *testing.T) {
 			require.Zero(t, n)
 			require.EqualError(t, err, "invalid limiter burst: "+strconv.Itoa(burst))
 			require.Empty(t, dst.Bytes())
+		})
+	}
+}
+
+func TestReaderAndWriterCancelPendingRateWait(t *testing.T) {
+	for _, direction := range []string{"read", "write"} {
+		t.Run(direction, func(t *testing.T) {
+			limiter := rate.NewLimiter(1, 1)
+			require.True(t, limiter.Allow())
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				var err error
+				if direction == "read" {
+					_, err = NewReaderWithContext(ctx, strings.NewReader("x"), limiter).Read(make([]byte, 1))
+				} else {
+					_, err = NewWriterWithContext(ctx, io.Discard, limiter).Write([]byte("x"))
+				}
+				done <- err
+			}()
+			require.Eventually(t, func() bool { return limiter.Tokens() < -0.5 }, time.Second, time.Millisecond)
+			cancel()
+			select {
+			case err := <-done:
+				require.ErrorIs(t, err, context.Canceled)
+			case <-time.After(250 * time.Millisecond):
+				t.Fatal("rate wait ignored context cancellation")
+			}
+			require.GreaterOrEqual(t, limiter.Tokens(), float64(0), "canceled reservation must be returned")
 		})
 	}
 }

@@ -24,13 +24,14 @@ import (
 	"testing"
 	"time"
 
+	quic "github.com/quic-go/quic-go"
+
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/nathole"
 	plugin "github.com/fatedier/frp/pkg/plugin/client"
 	"github.com/fatedier/frp/pkg/util/xlog"
 	xudptransport "github.com/fatedier/frp/pkg/xudp/transport"
-	quic "github.com/quic-go/quic-go"
 )
 
 type xudpLifecycleTestPlugin struct {
@@ -57,8 +58,8 @@ func newXUDPLifecycleTestProxy() *XUDPProxy {
 
 func newProductionXUDPLifecycleTestProxy() *XUDPProxy {
 	pxy := newXUDPLifecycleTestProxy()
-	pxy.BaseProxy.baseCfg = &v1.ProxyBaseConfig{}
-	pxy.BaseProxy.clientCfg = &v1.ClientCommonConfig{UDPPacketSize: 1500}
+	pxy.baseCfg = &v1.ProxyBaseConfig{}
+	pxy.clientCfg = &v1.ClientCommonConfig{UDPPacketSize: 1500}
 	pxy.cfg = &v1.XUDPProxyConfig{}
 	return pxy
 }
@@ -123,12 +124,10 @@ func TestXUDPProxyCloseCancelsAndJoinsActiveP2PAndRelay(t *testing.T) {
 
 			closeDone := make(chan struct{})
 			var closeCallers sync.WaitGroup
-			for i := 0; i < 16; i++ {
-				closeCallers.Add(1)
-				go func() {
-					defer closeCallers.Done()
+			for range 16 {
+				closeCallers.Go(func() {
 					pxy.Close()
-				}()
+				})
 			}
 			go func() {
 				closeCallers.Wait()
@@ -388,7 +387,7 @@ func (t *productionFakeDatagramTransport) Close() error {
 func (*productionFakeDatagramTransport) LocalAddr() net.Addr  { return &net.UDPAddr{} }
 func (*productionFakeDatagramTransport) RemoteAddr() net.Addr { return &net.UDPAddr{} }
 
-func startActiveP2PForward(t *testing.T, pxy *XUDPProxy, transport xudptransport.DatagramTransport) (*xudpConnLifecycle, net.Conn, net.Conn, <-chan struct{}) {
+func startActiveP2PForward(t *testing.T, pxy *XUDPProxy, transport xudptransport.DatagramTransport) (net.Conn, net.Conn, <-chan struct{}) {
 	t.Helper()
 	lc, conn, peer := promoteProductionXUDPConn(t, pxy)
 	done := make(chan struct{})
@@ -397,7 +396,7 @@ func startActiveP2PForward(t *testing.T, pxy *XUDPProxy, transport xudptransport
 		pxy.finishActive(lc)
 		close(done)
 	}()
-	return lc, conn, peer, done
+	return conn, peer, done
 }
 
 func TestXUDPP2PProductionReceiveFailureJoinsRealForwarder(t *testing.T) {
@@ -405,7 +404,7 @@ func TestXUDPP2PProductionReceiveFailureJoinsRealForwarder(t *testing.T) {
 	transport := &productionFakeDatagramTransport{
 		receive: func(context.Context) ([]byte, error) { return nil, net.ErrClosed },
 	}
-	_, _, peer, done := startActiveP2PForward(t, pxy, transport)
+	_, peer, done := startActiveP2PForward(t, pxy, transport)
 	defer peer.Close()
 	select {
 	case <-done:
@@ -454,7 +453,7 @@ func TestXUDPP2PProductionSendFailureJoinsRealForwarder(t *testing.T) {
 	}
 	pxy := newProductionXUDPLifecycleTestProxy()
 	pxy.localAddr = echoConn.LocalAddr().(*net.UDPAddr)
-	_, _, peer, done := startActiveP2PForward(t, pxy, transport)
+	_, peer, done := startActiveP2PForward(t, pxy, transport)
 	defer peer.Close()
 	select {
 	case <-echoDone:
@@ -482,7 +481,7 @@ func TestXUDPP2PProductionCloseUsesActiveRegistration(t *testing.T) {
 		},
 	}
 	pxy := newProductionXUDPLifecycleTestProxy()
-	_, conn, peer, done := startActiveP2PForward(t, pxy, transport)
+	conn, peer, done := startActiveP2PForward(t, pxy, transport)
 	defer peer.Close()
 	select {
 	case <-started:

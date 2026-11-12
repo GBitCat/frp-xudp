@@ -3,9 +3,9 @@
 # frp 开发环境镜像（基于 Ubuntu 26.04 LTS）
 #
 # 工具版本与 fatedier/frp 官方 CI（.github/workflows）保持一致：
-#   - Go 1.25.12             go.mod: go 1.25.0 / CI: go-version '1.25'
+#   - Go 1.26.11             go.mod: go 1.26.0 / CI: go-version '1.26'
 #   - Node.js 22.23.2 LTS    CI: node-version '22'
-#   - golangci-lint v2.11.4  CI: version v2.11
+#   - golangci-lint v2.12.2  CI: version v2.12.2
 #   - make / git / build-essential 等基础工具
 #
 # 构建时建议配合 scripts/build-dev-image.sh 使用：
@@ -17,9 +17,9 @@
 ARG BASE_IMAGE=ubuntu:26.04
 FROM ${BASE_IMAGE}
 
-ARG GO_VERSION=1.25.12
+ARG GO_VERSION=1.26.11
 ARG NODE_VERSION=22.23.2
-ARG GOLANGCI_LINT_VERSION=2.11.4
+ARG GOLANGCI_LINT_VERSION=2.12.2
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \
@@ -44,7 +44,7 @@ RUN set -eux; \
       tzdata; \
     rm -rf /var/lib/apt/lists/*
 
-# Go 工具链（官方二进制，与 frp 要求的 go 1.25 一致）
+# Go 工具链（官方二进制，与 frp 要求的 go 1.26 一致）
 RUN set -eux; \
     curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz; \
     rm -rf /usr/local/go; \
@@ -57,7 +57,7 @@ RUN set -eux; \
     tar -C /usr/local --strip-components=1 -xJf /tmp/node.tar.xz; \
     rm -f /tmp/node.tar.xz
 
-# golangci-lint v2（与 CI 的 v2.11 对应，自带 gci/gofumpt/goimports 格式化器）
+# golangci-lint v2（与 CI 的 v2.12.2 对应，自带 gci/gofumpt/goimports 格式化器）
 RUN set -eux; \
     curl -fsSL "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_LINT_VERSION}/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64.tar.gz" -o /tmp/golangci-lint.tar.gz; \
     mkdir -p /tmp/golangci-lint; \

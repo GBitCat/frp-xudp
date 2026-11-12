@@ -27,6 +27,8 @@ import (
 type PluginContext struct {
 	// Name is the unique identifier for this visitor, used for logging and routing.
 	Name string
+	// UDPPacketSize bounds the encoded payload accepted by the UDP visitor.
+	UDPPacketSize int
 
 	// Ctx manages the plugin's lifecycle and carries the logger for structured logging.
 	Ctx context.Context

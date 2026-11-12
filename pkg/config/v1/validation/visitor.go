@@ -17,7 +17,9 @@ package validation
 import (
 	"errors"
 	"fmt"
+	"net"
 	"slices"
+	"strconv"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 )
@@ -51,6 +53,42 @@ func validateVisitorBaseConfig(c *v1.VisitorBaseConfig) error {
 
 	if c.BindPort == 0 {
 		return errors.New("bind port is required")
+	}
+	if c.Plugin.Type == v1.VisitorPluginSocks5UDP {
+		if c.Type != "stcp" && c.Type != "xtcp" {
+			return errors.New("socks5_udp visitor plugin requires STCP/XTCP")
+		}
+		if c.BindPort != -1 {
+			return errors.New("socks5_udp visitor requires bindPort = -1; configure the SOCKS5 listener in plugin.bindPort")
+		}
+		options, ok := c.Plugin.VisitorPluginOptions.(*v1.Socks5UDPVisitorPluginOptions)
+		if !ok || options == nil {
+			return errors.New("invalid socks5_udp visitor options")
+		}
+		if options.BindPort <= 0 {
+			return errors.New("plugin.bindPort must be positive")
+		}
+		if err := ValidatePort(options.BindPort, "plugin.bindPort"); err != nil {
+			return err
+		}
+		if options.BindAddr != "" && net.ParseIP(options.BindAddr) == nil {
+			return errors.New("socks5_udp plugin.bindAddr must be an IP address")
+		}
+		host, port, err := net.SplitHostPort(options.UDPVisitorAddr)
+		if err != nil {
+			return fmt.Errorf("invalid plugin.udpVisitorAddr: %w", err)
+		}
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			return errors.New("plugin.udpVisitorAddr must reference a loopback IP address")
+		}
+		p, err := strconv.Atoi(port)
+		if err != nil || p <= 0 {
+			return errors.New("invalid plugin.udpVisitorAddr port")
+		}
+		if err := ValidatePort(p, "plugin.udpVisitorAddr port"); err != nil {
+			return err
+		}
 	}
 	return nil
 }

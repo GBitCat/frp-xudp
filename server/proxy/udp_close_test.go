@@ -60,20 +60,16 @@ func TestUDPProxyConcurrentCloseStopsProducersAndReclaimsWorkConn(t *testing.T) 
 
 	var wg sync.WaitGroup
 	for range 32 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			pxy.Close()
-		}()
+		})
 	}
 	for range 32 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			conn, peer := net.Pipe()
 			defer peer.Close()
 			pxy.replaceWorkConn(conn)
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -156,11 +152,9 @@ func TestUDPProxyConcurrentCloseJoinsBlockedWorkersAndReleasesPortOnce(t *testin
 		defer close(closeDone)
 		var wg sync.WaitGroup
 		for range 32 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				pxy.Close()
-			}()
+			})
 		}
 		wg.Wait()
 	}()

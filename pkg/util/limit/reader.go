@@ -24,12 +24,20 @@ import (
 type Reader struct {
 	r       io.Reader
 	limiter *rate.Limiter
+	ctx     context.Context
 }
 
 func NewReader(r io.Reader, limiter *rate.Limiter) *Reader {
+	return NewReaderWithContext(context.Background(), r, limiter)
+}
+
+// NewReaderWithContext cancels rate-limit waits when ctx is done. The owner
+// must still close r to unblock any pending read from the underlying stream.
+func NewReaderWithContext(ctx context.Context, r io.Reader, limiter *rate.Limiter) *Reader {
 	return &Reader{
 		r:       r,
 		limiter: limiter,
+		ctx:     ctx,
 	}
 }
 
@@ -49,7 +57,7 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 		return
 	}
 
-	err = r.limiter.WaitN(context.Background(), n)
+	err = r.limiter.WaitN(r.ctx, n)
 	if err != nil {
 		return
 	}

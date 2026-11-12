@@ -33,7 +33,6 @@ import (
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/naming"
 	"github.com/fatedier/frp/pkg/nathole"
-	"github.com/fatedier/frp/pkg/proto/udp"
 	"github.com/fatedier/frp/pkg/proto/wire"
 	netpkg "github.com/fatedier/frp/pkg/util/net"
 	xudptransport "github.com/fatedier/frp/pkg/xudp/transport"
@@ -135,6 +134,9 @@ func NewXUDPProxy(baseProxy *BaseProxy, cfg v1.ProxyConfigurer) Proxy {
 
 func (pxy *XUDPProxy) Run() (err error) {
 	pxy.initLifecycle()
+	if pxy.cfg.Plugin.Type != "" {
+		return pxy.runDatagramPlugin()
+	}
 	pxy.localAddr, err = net.ResolveUDPAddr("udp",
 		net.JoinHostPort(pxy.cfg.LocalIP, strconv.Itoa(pxy.cfg.LocalPort)))
 	return
@@ -461,7 +463,6 @@ func (pxy *XUDPProxy) runXUDPWorkers(lc *xudpConnLifecycle, workers ...func(cont
 	var wg sync.WaitGroup
 	wg.Add(len(workers))
 	for _, worker := range workers {
-		worker := worker
 		go func() {
 			defer wg.Done()
 			defer lc.stop()
@@ -535,8 +536,7 @@ func (pxy *XUDPProxy) forwardP2PQUICDatagram(lc *xudpConnLifecycle, conn xudptra
 			}
 		},
 		func(ctx context.Context) {
-			udp.ManagedForwarder(ctx, pxy.localAddr, readCh, sendCh,
-				int(pxy.clientCfg.UDPPacketSize), pxy.cfg.Transport.ProxyProtocolVersion)
+			pxy.forwardDatagrams(ctx, pxy.localAddr, readCh, sendCh)
 		},
 	)
 }
@@ -547,7 +547,7 @@ func (pxy *XUDPProxy) handleRelayWorkConn(lc *xudpConnLifecycle, conn net.Conn, 
 	xl := pxy.xl
 	xl.Infof("incoming a new work connection for xudp relay proxy, %s", conn.RemoteAddr().String())
 
-	remote, recycleFn, err := pxy.wrapWorkConn(conn, pxy.encryptionKey)
+	remote, recycleFn, err := pxy.wrapWorkConnWithContext(lc.ctx, conn, pxy.encryptionKey)
 	if err != nil {
 		xl.Errorf("wrap work connection: %v", err)
 		return
@@ -623,8 +623,7 @@ func (pxy *XUDPProxy) handleRelayWorkConn(lc *xudpConnLifecycle, conn net.Conn, 
 			}
 		},
 		func(ctx context.Context) {
-			udp.ManagedForwarder(ctx, pxy.localAddr, readCh, sendCh,
-				int(pxy.clientCfg.UDPPacketSize), pxy.cfg.Transport.ProxyProtocolVersion)
+			pxy.forwardDatagrams(ctx, pxy.localAddr, readCh, sendCh)
 		},
 	)
 }
