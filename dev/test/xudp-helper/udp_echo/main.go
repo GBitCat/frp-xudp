@@ -48,7 +48,7 @@ func main() {
 	defer conn.Close()
 
 	buffer := make([]byte, maxPacketBytes+1)
-	for packet := 0; packet < maxPackets; packet++ {
+	for packet := range maxPackets {
 		if err := conn.SetReadDeadline(time.Now().Add(packetReadLimit)); err != nil {
 			fail(exitNetwork, "set deadline: %v", err)
 		}

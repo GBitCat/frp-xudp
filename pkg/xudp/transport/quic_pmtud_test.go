@@ -63,7 +63,6 @@ func TestExperimentalPMTUDLoopbackDatagramComparison(t *testing.T) {
 
 func TestExperimentalPMTUDMeasuresLoopbackPayloadCeiling(t *testing.T) {
 	for _, enable := range []bool{false, true} {
-		enable := enable
 		name := "off"
 		if enable {
 			name = "on-experiment"

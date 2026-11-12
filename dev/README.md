@@ -17,7 +17,7 @@ dev/
 仓库根目录还有：
 
 ```
-Dockerfile            # 开发环境镜像（Ubuntu 26.04 + Go 1.25.12 + Node 22）
+Dockerfile            # 开发环境镜像（Ubuntu 26.04 + Go 1.26.11 + Node 22）
 scripts/              # 代理拉镜像 / 构建镜像 / 上游升级脚本
 UPSTREAM_SYNC.md      # beta 跟随 upstream/dev 的同步维护说明
 FRP_XUDP_Extension_Design_Document.md  # XUDP 设计文档
@@ -25,8 +25,8 @@ FRP_XUDP_Extension_Design_Document.md  # XUDP 设计文档
 
 ## 开发环境镜像
 
-基于 Ubuntu 26.04 LTS，工具版本与 frp 官方 CI 对齐：Go 1.25.12、
-Node.js 22.23.2、golangci-lint v2.11.4、make/git/build-essential 等。
+基于 Ubuntu 26.04 LTS，工具版本与 frp 官方 CI 对齐：Go 1.26.11、
+Node.js 22.23.2、golangci-lint v2.12.2、make/git/build-essential 等。
 
 ## 使用方法
 

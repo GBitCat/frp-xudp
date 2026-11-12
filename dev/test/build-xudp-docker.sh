@@ -6,7 +6,7 @@ export LC_ALL=C
 # and the four artifacts are published with one host-side rename.
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-IMAGE=${FRP_XUDP_BUILD_IMAGE-golang:1.25-bookworm}
+IMAGE=${FRP_XUDP_BUILD_IMAGE-golang:1.26-bookworm}
 OUTPUT=${FRP_XUDP_BIN_DIR-/tmp/frp-bin}
 LOG=${FRP_XUDP_BUILD_LOG-/tmp/frp-xudp-build-$(date -u +%Y%m%dT%H%M%SZ)-$$.log}
 BUILD_NETWORK=${FRP_XUDP_BUILD_NETWORK-}

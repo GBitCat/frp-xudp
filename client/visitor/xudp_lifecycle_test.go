@@ -7,12 +7,13 @@ import (
 	"testing"
 	"time"
 
+	quic "github.com/quic-go/quic-go"
+
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/nathole"
 	xudpstate "github.com/fatedier/frp/pkg/xudp/state"
 	xudptransport "github.com/fatedier/frp/pkg/xudp/transport"
-	quic "github.com/quic-go/quic-go"
 )
 
 type blockingXUDPActiveTransport struct {
@@ -218,7 +219,7 @@ func TestXUDPVisitorRunIsSingleUseAndCloseIsConcurrentSafe(t *testing.T) {
 	const closers = 8
 	var wg sync.WaitGroup
 	wg.Add(closers)
-	for i := 0; i < closers; i++ {
+	for range closers {
 		go func() {
 			defer wg.Done()
 			visitor.Close()

@@ -184,7 +184,7 @@ func TestClassifyLegacyXUDPWorkConnCiphertextIsRelay(t *testing.T) {
 			malicious[len(malicious)-1] ^= 0xff
 			assertLegacyRelayClassification(t, wireProtocol, malicious)
 
-			for i := 0; i < 128; i++ {
+			for range 128 {
 				ciphertext := make([]byte, 1+rng.Intn(256))
 				_, err := rng.Read(ciphertext)
 				require.NoError(t, err)

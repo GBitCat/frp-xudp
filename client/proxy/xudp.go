@@ -461,7 +461,6 @@ func (pxy *XUDPProxy) runXUDPWorkers(lc *xudpConnLifecycle, workers ...func(cont
 	var wg sync.WaitGroup
 	wg.Add(len(workers))
 	for _, worker := range workers {
-		worker := worker
 		go func() {
 			defer wg.Done()
 			defer lc.stop()
