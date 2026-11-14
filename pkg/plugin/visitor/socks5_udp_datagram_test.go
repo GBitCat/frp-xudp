@@ -8,9 +8,11 @@
 package visitor
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -224,5 +226,156 @@ func TestStandaloneSocks5UDPRejectsInvalidPacketBudgetBeforeListening(t *testing
 		}, &v1.Socks5UDPVisitorPluginOptions{BindAddr: "127.0.0.1"})
 		require.Nil(t, p)
 		require.ErrorContains(t, err, "packet size")
+	}
+}
+
+func TestStandaloneSocks5UDPDisconnectCancelsDial(t *testing.T) {
+	for _, overflow := range []bool{false, true} {
+		name := "disconnect"
+		if overflow {
+			name = "excess_control_input"
+		}
+		t.Run(name, func(t *testing.T) {
+			started := make(chan struct{})
+			canceled := make(chan struct{})
+			p, err := NewSocks5UDPPlugin(PluginContext{
+				ProxyType: "xudp", SecretKey: "secret",
+				DialDatagram: func(ctx context.Context) (net.Conn, error) {
+					close(started)
+					<-ctx.Done()
+					close(canceled)
+					return nil, ctx.Err()
+				},
+			}, &v1.Socks5UDPVisitorPluginOptions{BindAddr: "127.0.0.1"})
+			require.NoError(t, err)
+			plugin := p.(*Socks5UDPPlugin)
+			plugin.Start()
+			t.Cleanup(func() { _ = plugin.Close() })
+			client, err := net.Dial("tcp4", plugin.listener.Addr().String())
+			require.NoError(t, err)
+			defer client.Close()
+			_, err = client.Write([]byte{5, 1, 0})
+			require.NoError(t, err)
+			select {
+			case <-started:
+			case <-time.After(time.Second):
+				t.Fatal("datagram dial did not start")
+			}
+			if overflow {
+				_, err = client.Write(make([]byte, 1025))
+				require.NoError(t, err)
+			} else {
+				require.NoError(t, client.Close())
+			}
+			select {
+			case <-canceled:
+			case <-time.After(time.Second):
+				t.Fatal("local control termination did not cancel datagram dial")
+			}
+			require.Eventually(t, func() bool {
+				plugin.mu.Lock()
+				defer plugin.mu.Unlock()
+				return len(plugin.clients) == 0
+			}, time.Second, time.Millisecond)
+		})
+	}
+}
+
+func TestStandaloneSocks5UDPDisconnectReleasesPendingNegotiation(t *testing.T) {
+	blackhole, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	defer blackhole.Close()
+	localAddrs := make(chan *net.UDPAddr, 1)
+	p, err := NewSocks5UDPPlugin(PluginContext{
+		ProxyType: "sudp", SecretKey: "secret",
+		DialDatagram: func(ctx context.Context) (net.Conn, error) {
+			conn, err := (&net.Dialer{}).DialContext(ctx, "udp4", blackhole.LocalAddr().String())
+			if err == nil {
+				localAddrs <- conn.LocalAddr().(*net.UDPAddr)
+			}
+			return conn, err
+		},
+	}, &v1.Socks5UDPVisitorPluginOptions{BindAddr: "127.0.0.1"})
+	require.NoError(t, err)
+	plugin := p.(*Socks5UDPPlugin)
+	plugin.Start()
+	t.Cleanup(func() { _ = plugin.Close() })
+	for _, pipelined := range []bool{false, true} {
+		client, err := net.Dial("tcp4", plugin.listener.Addr().String())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = client.Close() })
+		greeting := []byte{5, 1, 0}
+		if pipelined {
+			// Input queued during negotiation must not hide a subsequent EOF.
+			greeting = append(greeting, 5, 3, 0, 1, 0, 0, 0, 0, 0, 0)
+		}
+		_, err = client.Write(greeting)
+		require.NoError(t, err)
+		require.NoError(t, blackhole.SetReadDeadline(time.Now().Add(time.Second)))
+		_, _, err = blackhole.ReadFromUDP(make([]byte, 1500))
+		require.NoError(t, err)
+		localAddr := <-localAddrs
+		require.NoError(t, client.Close())
+		require.Eventually(t, func() bool {
+			plugin.mu.Lock()
+			defer plugin.mu.Unlock()
+			return len(plugin.clients) == 0
+		}, time.Second, time.Millisecond, "disconnected application retained a pending client slot")
+		// The upstream socket is released with the slot, rather than being left
+		// to retry HELLO until the 60-second setup timeout.
+		rebound, err := net.ListenUDP("udp4", localAddr)
+		require.NoError(t, err)
+		_ = rebound.Close()
+	}
+}
+
+func TestStandaloneSocks5UDPPipelinedHandshake(t *testing.T) {
+	for _, authenticated := range []bool{false, true} {
+		for _, fragmented := range []bool{false, true} {
+			username, password := "", ""
+			method := byte(0)
+			if authenticated {
+				username, password = strings.Repeat("u", 255), strings.Repeat("p", 255)
+				method = 2
+			}
+			h := newStandaloneSocks5UDPHarness(t, username, password, 0)
+			client, err := net.Dial("tcp4", h.plugin.listener.Addr().String())
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = client.Close() })
+			require.NoError(t, client.SetDeadline(time.Now().Add(3*time.Second)))
+			var handshake bytes.Buffer
+			handshake.Write([]byte{5, 1, method})
+			if authenticated {
+				handshake.Write([]byte{1, 255})
+				handshake.WriteString(username)
+				handshake.WriteByte(255)
+				handshake.WriteString(password)
+			}
+			require.NoError(t, socks5udp.WriteRequest(&handshake, socks5udp.CmdUDPAssociate, socks5udp.Address{}))
+			if fragmented {
+				for _, b := range handshake.Bytes() {
+					_, err = client.Write([]byte{b})
+					require.NoError(t, err)
+				}
+			} else {
+				_, err = client.Write(handshake.Bytes())
+				require.NoError(t, err)
+			}
+			var reply [2]byte
+			_, err = io.ReadFull(client, reply[:])
+			require.NoError(t, err)
+			require.Equal(t, [2]byte{5, method}, reply)
+			if authenticated {
+				_, err = io.ReadFull(client, reply[:])
+				require.NoError(t, err)
+				require.Equal(t, [2]byte{1, 0}, reply)
+			}
+			status, bound, err := socks5udp.ReadReply(client)
+			require.NoError(t, err)
+			require.Zero(t, status)
+			relay, err := net.ResolveUDPAddr("udp", bound.String())
+			require.NoError(t, err)
+			socks5Exchange(t, socks5UDPClient(t, net.IPv4(127, 0, 0, 1)), relay, socks5UDPEcho(t), "pipelined-handshake")
+		}
 	}
 }

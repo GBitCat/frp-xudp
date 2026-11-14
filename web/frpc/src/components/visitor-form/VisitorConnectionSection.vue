@@ -6,7 +6,7 @@
       <ConfigField label="Server User" type="text" v-model="form.serverUser"
         placeholder="Leave empty for same user" :readonly="readonly" />
     </div>
-    <ConfigField label="Secret Key" type="password" v-model="form.secretKey"
+    <ConfigField label="Secret Key" type="password" v-model="form.secretKey" prop="secretKey"
       placeholder="Shared secret" :readonly="readonly" />
     <div class="field-row two-col">
       <ConfigField label="Bind Address" type="text" v-model="form.bindAddr"
@@ -36,10 +36,17 @@ const form = computed({
   set: (val) => emit('update:modelValue', val),
 })
 
-const bindPortMin = computed(() => (form.value.type === 'sudp' ? 1 : undefined))
-const bindPortTip = computed(() => form.value.type === 'sudp'
-  ? ''
-  : 'Use -1 to skip the local listener when connections come from another visitor or plugin.')
+const bindPortMin = computed(() => (
+  form.value.type === 'sudp' && form.value.pluginType !== 'socks5_udp' ? 1 : undefined
+))
+const bindPortTip = computed(() => {
+  if (form.value.pluginType === 'socks5_udp') {
+    return 'Use -1. Set the local SOCKS5 listening port in the Plugin section.'
+  }
+  return form.value.type === 'sudp'
+    ? ''
+    : 'Use -1 to skip the local listener when connections come from another visitor or plugin.'
+})
 </script>
 
 <style scoped lang="scss">

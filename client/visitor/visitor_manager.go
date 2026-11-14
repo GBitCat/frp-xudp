@@ -27,6 +27,7 @@ import (
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/transport"
+	netpkg "github.com/fatedier/frp/pkg/util/net"
 	"github.com/fatedier/frp/pkg/util/xlog"
 	"github.com/fatedier/frp/pkg/vnet"
 )
@@ -75,6 +76,24 @@ func NewManager(
 		runID:           runID,
 		udpPacketCodec:  udpPacketCodec,
 	}
+	return m
+}
+
+// NewManagerWithContext lets visitors cancel their own connection setup without
+// closing the shared control connection or interrupting other visitors.
+func NewManagerWithContext(
+	ctx context.Context,
+	runID string,
+	clientCfg *v1.ClientCommonConfig,
+	connectServer func(context.Context) (*msg.Conn, error),
+	msgTransporter transport.MessageTransporter,
+	vnetController *vnet.Controller,
+	udpPacketCodecs ...string,
+) *Manager {
+	m := NewManager(ctx, runID, clientCfg, func() (*msg.Conn, error) {
+		return connectServer(ctx)
+	}, msgTransporter, vnetController, udpPacketCodecs...)
+	m.helper.(*visitorHelperImpl).connectServerContextFn = connectServer
 	return m
 }
 
@@ -207,16 +226,34 @@ func (vm *Manager) GetVisitorCfg(name string) (v1.VisitorConfigurer, bool) {
 }
 
 type visitorHelperImpl struct {
-	connectServerFn func() (*msg.Conn, error)
-	msgTransporter  transport.MessageTransporter
-	vnetController  *vnet.Controller
-	transferConnFn  func(name string, conn net.Conn) error
-	runID           string
-	udpPacketCodec  string
+	connectServerFn        func() (*msg.Conn, error)
+	connectServerContextFn func(context.Context) (*msg.Conn, error)
+	msgTransporter         transport.MessageTransporter
+	vnetController         *vnet.Controller
+	transferConnFn         func(name string, conn net.Conn) error
+	runID                  string
+	udpPacketCodec         string
 }
 
 func (v *visitorHelperImpl) ConnectServer() (*msg.Conn, error) {
 	return v.connectServerFn()
+}
+
+func (v *visitorHelperImpl) ConnectServerContext(ctx context.Context) (*msg.Conn, error) {
+	if v.connectServerContextFn != nil {
+		return v.connectServerContextFn(ctx)
+	}
+	conn, err := netpkg.DialWithContext(ctx, func() (net.Conn, error) {
+		connected, connectErr := v.ConnectServer()
+		if connected == nil {
+			return nil, connectErr
+		}
+		return connected, connectErr
+	})
+	if conn == nil {
+		return nil, err
+	}
+	return conn.(*msg.Conn), err
 }
 
 func (v *visitorHelperImpl) TransferConn(name string, conn net.Conn) error {

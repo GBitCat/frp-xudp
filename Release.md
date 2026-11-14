@@ -1,3 +1,13 @@
+## Rebuilt v0.72.0: Lifecycle, Bandwidth and Visitor Editor Fixes
+
+* Restored the Go build and executable runtime stages in both production Dockerfiles, including the frpc/frps entrypoints.
+* Cancel autonomous SOCKS5 UDP setup when the local application disconnects, releasing pending client slots and UDP sockets while preserving valid pipelined authentication and request bytes in a bounded buffer.
+* Cancel XUDP relay setup during shutdown or reload, including QUIC stream allocation and visitor handshake I/O. Legacy dial results that arrive after cancellation are closed without interrupting other streams on the shared connection.
+* Apply the existing client bandwidth budget to both directions of XUDP P2P traffic as well as relay traffic. Small bursts preserve complete datagrams, and shutdown cancels pending rate waits.
+* Preserve SOCKS5 plugins and unexposed configuration fields when editing visitors in the Web dashboard. STCP/XTCP/SUDP SOCKS5 options are editable, including SUDP with `bindPort = -1`. XUDP management API and Web configuration support remain outside this update.
+* Validation: unit tests, affected race suites, static checks, 26 frontend tests, frontend type checking/builds, and native amd64 Docker image builds/startup passed. Full E2E: 268 passed, 2 skipped due to unstable STUN. Some upstream dial operations cannot be canceled internally; XUDP shutdown stops waiting and closes any late connection.
+* The version remains `0.72.0`; use the new release checksums to identify this rebuild.
+
 ## Rebuilt v0.72.0: Autonomous SOCKS5 UDP Sessions
 
 * Added `sessionMode = "datagram"` to the SUDP/XUDP `socks5_udp` plugin. Authentication, creation, renewal and closure now run over the datagram channel without a paired STCP/XTCP proxy or `udpProxyName`.

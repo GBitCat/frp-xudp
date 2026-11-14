@@ -489,6 +489,9 @@ func (pxy *XUDPProxy) forwardP2PQUICDatagram(lc *xudpConnLifecycle, conn xudptra
 					xl.Debugf("xudp p2p quic receive error: %v", err)
 					return
 				}
+				if err := pxy.waitP2PBandwidth(ctx, len(data)); err != nil {
+					return
+				}
 				pkt, err := msg.DecodeUDPPacketBinary(data)
 				if err != nil {
 					xl.Warnf("xudp decode p2p quic data packet error: %v", err)
@@ -524,6 +527,9 @@ func (pxy *XUDPProxy) forwardP2PQUICDatagram(lc *xudpConnLifecycle, conn xudptra
 						xl.Warnf("xudp p2p quic datagram too large: %d > %d", len(body), limit)
 						continue
 					}
+					if err := pxy.waitP2PBandwidth(ctx, len(body)); err != nil {
+						return
+					}
 					if err := conn.SendDatagram(body); err != nil {
 						if stderrors.Is(err, xudptransport.ErrDatagramTooLarge) {
 							xl.Warnf("xudp p2p quic datagram too large: %v", err)
@@ -539,6 +545,28 @@ func (pxy *XUDPProxy) forwardP2PQUICDatagram(lc *xudpConnLifecycle, conn xudptra
 			pxy.forwardDatagrams(ctx, pxy.localAddr, readCh, sendCh)
 		},
 	)
+}
+
+// waitP2PBandwidth shares the proxy's client-side budget with relay traffic
+// and every P2P connection, in both directions. A datagram can exceed the
+// limiter's burst at low configured rates: reserve it in bounded portions,
+// but forward the complete datagram only after the entire budget is available.
+func (pxy *XUDPProxy) waitP2PBandwidth(ctx context.Context, size int) error {
+	if pxy.limiter == nil {
+		return ctx.Err()
+	}
+	burst := pxy.limiter.Burst()
+	if burst <= 0 {
+		return fmt.Errorf("invalid limiter burst: %d", burst)
+	}
+	for size > 0 {
+		n := min(size, burst)
+		if err := pxy.limiter.WaitN(ctx, n); err != nil {
+			return err
+		}
+		size -= n
+	}
+	return ctx.Err()
 }
 
 // handleRelayWorkConn forwards UDP packets through the frps relay

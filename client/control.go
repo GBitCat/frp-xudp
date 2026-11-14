@@ -27,6 +27,7 @@ import (
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/naming"
 	"github.com/fatedier/frp/pkg/transport"
+	netpkg "github.com/fatedier/frp/pkg/util/net"
 	"github.com/fatedier/frp/pkg/util/wait"
 	"github.com/fatedier/frp/pkg/util/xlog"
 	"github.com/fatedier/frp/pkg/vnet"
@@ -102,8 +103,8 @@ func NewControl(ctx context.Context, sessionCtx *SessionContext) (*Control, erro
 		sessionCtx.VnetController,
 		sessionCtx.UDPPacketCodec,
 	)
-	ctl.vm = visitor.NewManager(ctl.ctx, sessionCtx.RunID, sessionCtx.Common,
-		ctl.connectServer, ctl.msgTransporter, sessionCtx.VnetController, sessionCtx.UDPPacketCodec)
+	ctl.vm = visitor.NewManagerWithContext(ctl.ctx, sessionCtx.RunID, sessionCtx.Common,
+		ctl.connectServerContext, ctl.msgTransporter, sessionCtx.VnetController, sessionCtx.UDPPacketCodec)
 	return ctl, nil
 }
 
@@ -227,6 +228,25 @@ func (ctl *Control) Done() <-chan struct{} {
 // connectServer return a new connection to frps
 func (ctl *Control) connectServer() (*msg.Conn, error) {
 	return ctl.sessionCtx.Connector.Connect()
+}
+
+func (ctl *Control) connectServerContext(ctx context.Context) (*msg.Conn, error) {
+	if connector, ok := ctl.sessionCtx.Connector.(interface {
+		ConnectContext(context.Context) (*msg.Conn, error)
+	}); ok {
+		return connector.ConnectContext(ctx)
+	}
+	conn, err := netpkg.DialWithContext(ctx, func() (net.Conn, error) {
+		connected, connectErr := ctl.connectServer()
+		if connected == nil {
+			return nil, connectErr
+		}
+		return connected, connectErr
+	})
+	if conn == nil {
+		return nil, err
+	}
+	return conn.(*msg.Conn), err
 }
 
 func (ctl *Control) registerMsgHandlers() {

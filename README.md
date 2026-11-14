@@ -59,7 +59,8 @@ bindPort = 9000
 ## SOCKS5 TCP/UDP 插件
 
 `socks5_udp` 提供标准 SOCKS5 入口，目标地址、端口由应用在请求中指定，域名在提供端解析。
-本次 `0.72.0` 覆盖更新增加自主 UDP 会话模式，两端 frpc 都需更新到本次构建。
+`0.72.0` 支持自主 UDP 会话模式。本次覆盖更新修复会话回收、XUDP 关闭与 P2P 限速，
+并补齐 Web 中 STCP/XTCP/SUDP visitor 的 SOCKS5 配置编辑；两端 frpc 都需更新到本次构建。
 
 | 模式 | 代理类型 | 用途 |
 | --- | --- | --- |
@@ -76,6 +77,9 @@ bindPort = 9000
 两端 frpc 之间无需独立的 SOCKS5 TCP 控制通道。自主模式只支持 UDP `ASSOCIATE`，
 需要 TCP 业务时另配 `socks5` 或使用原有配对模式。SUDP 走中继；XUDP 直连成功后
 走 QUIC DATAGRAM，失败时自动回退中继。FRP 自身的控制与中继机制保持原样。
+
+Web 编辑 visitor 时会保留已有 SOCKS5 插件及未展示字段，SUDP 插件模式支持
+`bindPort = -1`。XUDP 继续通过配置文件管理，配置方法见下方文档。
 
 省略 `sessionMode` 保持原有配对模式。由于发布版本号保持 `0.72.0`，请依据本次
 Release 说明和 SHA256 清单确认已更新两端安装包。

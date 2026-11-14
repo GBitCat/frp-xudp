@@ -61,11 +61,29 @@ func newMessageConnector(connector Connector, wireProtocol string) *messageConne
 }
 
 func (c *messageConnector) Connect() (*msg.Conn, error) {
-	conn, err := c.connector.Connect()
+	return c.ConnectContext(context.Background())
+}
+
+func (c *messageConnector) ConnectContext(ctx context.Context) (*msg.Conn, error) {
+	var conn net.Conn
+	var err error
+	if connector, ok := c.connector.(interface {
+		ConnectContext(context.Context) (net.Conn, error)
+	}); ok {
+		conn, err = connector.ConnectContext(ctx)
+	} else {
+		conn, err = netpkg.DialWithContext(ctx, c.connector.Connect)
+	}
 	if err != nil {
 		return nil, err
 	}
+	stopCancel := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stopCancel()
 	if err = wire.WriteMagicIfV2(conn, c.wireProtocol); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		conn.Close()
 		return nil, err
 	}
@@ -164,25 +182,47 @@ func (c *defaultConnectorImpl) Open() error {
 
 // Connect returns a stream from the underlying connection, or a new TCP connection if TCPMux isn't enabled.
 func (c *defaultConnectorImpl) Connect() (net.Conn, error) {
+	return c.ConnectContext(c.ctx)
+}
+
+func (c *defaultConnectorImpl) ConnectContext(ctx context.Context) (net.Conn, error) {
+	if err := c.ctx.Err(); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	stopParent := context.AfterFunc(c.ctx, cancel)
+	defer cancel()
+	defer stopParent()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if c.quicConn != nil {
-		stream, err := c.quicConn.OpenStreamSync(context.Background())
+		stream, err := c.quicConn.OpenStreamSync(ctx)
 		if err != nil {
 			return nil, err
 		}
 		return netpkg.QuicStreamToNetConn(stream, c.quicConn), nil
 	} else if c.muxSession != nil {
-		stream, err := c.muxSession.OpenStream()
-		if err != nil {
-			return nil, err
-		}
-		return stream, nil
+		// yamux has no per-stream context API. Its session/open deadlines bound
+		// the underlying operation; a late stream remains producer-owned.
+		return netpkg.DialWithContext(ctx, func() (net.Conn, error) {
+			stream, err := c.muxSession.OpenStream()
+			if stream == nil {
+				return nil, err
+			}
+			return stream, err
+		})
 	}
 
-	return c.realConnect()
+	return c.realConnectContext(ctx)
 }
 
 func (c *defaultConnectorImpl) realConnect() (net.Conn, error) {
-	xl := xlog.FromContextSafe(c.ctx)
+	return c.realConnectContext(c.ctx)
+}
+
+func (c *defaultConnectorImpl) realConnectContext(ctx context.Context) (net.Conn, error) {
+	xl := xlog.FromContextSafe(ctx)
 	var tlsConfig *tls.Config
 	var err error
 	tlsEnable := lo.FromPtr(c.cfg.Transport.TLS.Enable)
@@ -212,7 +252,20 @@ func (c *defaultConnectorImpl) realConnect() (net.Conn, error) {
 		xl.Errorf("fail to parse proxy url")
 		return nil, err
 	}
-	dialOptions := []libnet.DialOption{}
+	var stopCancel func() bool
+	defer func() {
+		if stopCancel != nil {
+			stopCancel()
+		}
+	}()
+	dialOptions := []libnet.DialOption{
+		libnet.WithAfterHook(libnet.AfterHook{Priority: 1, Hook: func(ctx context.Context, conn net.Conn, _ string) (context.Context, net.Conn, error) {
+			// TLS and WebSocket handshakes may perform blocking I/O
+			// after the initial dial. Closing only this socket cancels them.
+			stopCancel = context.AfterFunc(ctx, func() { _ = conn.Close() })
+			return ctx, conn, nil
+		}}),
+	}
 	protocol := c.cfg.Transport.Protocol
 	switch protocol {
 	case "websocket":
@@ -245,10 +298,16 @@ func (c *defaultConnectorImpl) realConnect() (net.Conn, error) {
 		libnet.WithProxyAuth(auth),
 	)
 	conn, err := libnet.DialContext(
-		c.ctx,
+		ctx,
 		net.JoinHostPort(c.cfg.ServerAddr, strconv.Itoa(c.cfg.ServerPort)),
 		dialOptions...,
 	)
+	if ctx.Err() != nil {
+		if conn != nil {
+			conn.Close()
+		}
+		return nil, ctx.Err()
+	}
 	return conn, err
 }
 

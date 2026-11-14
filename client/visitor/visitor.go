@@ -200,10 +200,32 @@ func (v *BaseVisitor) Close() {
 }
 
 func (v *BaseVisitor) dialRawVisitorConn(cfg *v1.VisitorBaseConfig) (net.Conn, error) {
-	visitorConn, err := v.helper.ConnectServer()
+	return v.dialRawVisitorConnContext(context.Background(), cfg)
+}
+
+func (v *BaseVisitor) dialRawVisitorConnContext(ctx context.Context, cfg *v1.VisitorBaseConfig) (net.Conn, error) {
+	connect := v.helper.ConnectServer
+	if helper, ok := v.helper.(interface {
+		ConnectServerContext(context.Context) (*msg.Conn, error)
+	}); ok {
+		connect = func() (*msg.Conn, error) { return helper.ConnectServerContext(ctx) }
+	}
+	// Third-party proxy hooks and legacy multiplexers can still contain
+	// blocking calls despite accepting ctx. Keep result ownership explicit so
+	// shutdown never waits for those calls or abandons a late connection.
+	conn, err := netpkg.DialWithContext(ctx, func() (net.Conn, error) {
+		connected, connectErr := connect()
+		if connected == nil {
+			return nil, connectErr
+		}
+		return connected, connectErr
+	})
 	if err != nil {
 		return nil, fmt.Errorf("connect to server error: %v", err)
 	}
+	visitorConn := conn.(*msg.Conn)
+	stopCancel := context.AfterFunc(ctx, func() { _ = visitorConn.Close() })
+	defer stopCancel()
 
 	now := time.Now().Unix()
 	targetProxyName := naming.BuildTargetServerProxyName(v.clientCfg.User, cfg.ServerUser, cfg.ServerName)
@@ -233,6 +255,10 @@ func (v *BaseVisitor) dialRawVisitorConn(cfg *v1.VisitorBaseConfig) (net.Conn, e
 	if newVisitorConnRespMsg.Error != "" {
 		visitorConn.Close()
 		return nil, fmt.Errorf("start new visitor connection error: %s", newVisitorConnRespMsg.Error)
+	}
+	if err := ctx.Err(); err != nil {
+		visitorConn.Close()
+		return nil, err
 	}
 	return visitorConn, nil
 }

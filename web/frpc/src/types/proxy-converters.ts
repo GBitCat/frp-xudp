@@ -168,17 +168,32 @@ export function formToStoreProxy(form: ProxyFormData): ProxyDefinition {
 }
 
 export function formToStoreVisitor(form: VisitorFormData): VisitorDefinition {
-  const block: Record<string, any> = {}
+  // Store updates replace the whole definition. Retain fields this form does
+  // not edit, including nested transport and plugin options from newer clients.
+  const original = form.originalConfig?.type === form.type
+    ? cloneVisitorConfig(form.originalConfig)
+    : undefined
+  const block: Record<string, any> = original
+    ? getStoreVisitorBlock(original)
+    : {}
+  const originalPlugin = block.plugin
+  for (const field of [
+    'enabled', 'secretKey', 'serverUser', 'serverName', 'bindAddr', 'bindPort', 'plugin',
+  ]) {
+    delete block[field]
+  }
+  const transport = { ...block.transport }
+  delete transport.useEncryption
+  delete transport.useCompression
+  delete block.transport
 
   if (!form.enabled) {
     block.enabled = false
   }
 
-  if (form.useEncryption || form.useCompression) {
-    block.transport = {}
-    if (form.useEncryption) block.transport.useEncryption = true
-    if (form.useCompression) block.transport.useCompression = true
-  }
+  if (form.useEncryption) transport.useEncryption = true
+  if (form.useCompression) transport.useCompression = true
+  if (Object.keys(transport).length) block.transport = transport
 
   if (form.secretKey) block.secretKey = form.secretKey
   if (form.serverUser) block.serverUser = form.serverUser
@@ -195,12 +210,37 @@ export function formToStoreVisitor(form: VisitorFormData): VisitorDefinition {
     (form.type === 'stcp' || form.type === 'xtcp')
   ) {
     block.plugin = {
+      ...(originalPlugin?.type === form.pluginType ? originalPlugin : {}),
       type: 'virtual_net',
       destinationIP: form.pluginDestinationIP.trim(),
     }
+  } else if (form.pluginType === 'socks5_udp') {
+    block.plugin = {
+      ...(originalPlugin?.type === form.pluginType ? originalPlugin : {}),
+      type: 'socks5_udp',
+      bindPort: form.pluginBindPort,
+    }
+    delete block.plugin.bindAddr
+    delete block.plugin.udpVisitorAddr
+    if (form.pluginBindAddr) block.plugin.bindAddr = form.pluginBindAddr
+    if (form.pluginUDPVisitorAddr) {
+      block.plugin.udpVisitorAddr = form.pluginUDPVisitorAddr
+    }
+  } else if (form.pluginType && form.pluginType !== 'virtual_net') {
+    // Unknown plugins remain intact unless the user explicitly changes them.
+    if (originalPlugin?.type === form.pluginType) block.plugin = originalPlugin
   }
 
   if (form.type === 'xtcp') {
+    for (const field of [
+      'protocol', 'keepTunnelOpen', 'maxRetriesAnHour', 'minRetryInterval',
+      'fallbackTo', 'fallbackTimeoutMs',
+    ]) {
+      delete block[field]
+    }
+    const natTraversal = { ...block.natTraversal }
+    delete natTraversal.disableAssistedAddrs
+    delete block.natTraversal
     if (form.protocol && form.protocol !== 'quic') {
       block.protocol = form.protocol
     }
@@ -220,20 +260,25 @@ export function formToStoreVisitor(form: VisitorFormData): VisitorDefinition {
       block.fallbackTimeoutMs = form.fallbackTimeoutMs
     }
     if (form.natTraversalDisableAssistedAddrs) {
-      block.natTraversal = {
-        disableAssistedAddrs: true,
-      }
+      natTraversal.disableAssistedAddrs = true
     }
+    if (Object.keys(natTraversal).length) block.natTraversal = natTraversal
   }
 
   return withStoreVisitorBlock(
     {
+      ...original,
       name: form.name,
       type: form.type,
     },
     form.type,
     block,
   )
+}
+
+function cloneVisitorConfig(config: VisitorDefinition): VisitorDefinition {
+  // API definitions are JSON data; this also accepts Vue reactive proxies.
+  return JSON.parse(JSON.stringify(config))
 }
 
 // ========================================
@@ -440,6 +485,7 @@ export function storeVisitorToForm(
 ): VisitorFormData {
   const c = getStoreVisitorBlock(config)
   const form = createDefaultVisitorForm()
+  form.originalConfig = cloneVisitorConfig(config)
 
   form.name = config.name || ''
   form.type = config.type || 'stcp'
@@ -458,13 +504,14 @@ export function storeVisitorToForm(
   form.bindAddr = c.bindAddr || '127.0.0.1'
   form.bindPort = c.bindPort
 
-  // Visitor plugin (only supported by stcp/xtcp; sudp runtime never uses it)
-  if (
-    c.plugin?.type === 'virtual_net' &&
-    (form.type === 'stcp' || form.type === 'xtcp')
-  ) {
-    form.pluginType = 'virtual_net'
+  // Preserve every plugin type; supported options are editable below.
+  form.pluginType = c.plugin?.type || ''
+  if (form.pluginType === 'virtual_net') {
     form.pluginDestinationIP = c.plugin.destinationIP || ''
+  } else if (form.pluginType === 'socks5_udp') {
+    form.pluginBindAddr = c.plugin.bindAddr || '127.0.0.1'
+    form.pluginBindPort = c.plugin.bindPort
+    form.pluginUDPVisitorAddr = c.plugin.udpVisitorAddr || ''
   }
 
   // XTCP specific
