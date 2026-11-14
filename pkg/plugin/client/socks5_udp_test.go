@@ -56,3 +56,21 @@ func TestSocks5UDPPluginCloseStopsPacketWorker(t *testing.T) {
 		t.Fatal("packet worker survived plugin close")
 	}
 }
+
+func TestSocks5UDPStandaloneEndpointIsNotPaired(t *testing.T) {
+	store := &sync.Map{}
+	ctx := PluginContext{Name: "data", ProxyType: "sudp", SecretKey: "test-secret", SharedStore: store}
+	opts := &v1.Socks5UDPPluginOptions{Type: v1.PluginSocks5UDP, SessionMode: "datagram", Username: "alice"}
+	p, err := NewSocks5UDPPlugin(ctx, opts)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = p.Close() })
+	_, exists := store.Load(socks5EndpointKey{"data"})
+	require.False(t, exists, "paired controls must not create unauthenticated sessions in a standalone endpoint")
+	ctx.SecretKey = ""
+	_, err = NewSocks5UDPPlugin(ctx, opts)
+	require.Error(t, err, "standalone session frames require a transport secret even if SOCKS authentication is disabled")
+	ctx.SecretKey = "test-secret"
+	opts.SessionMode = "paired"
+	_, err = NewSocks5UDPPlugin(ctx, opts)
+	require.Error(t, err, "legacy UDP blocks must not silently change their credential role")
+}

@@ -44,15 +44,17 @@ func init() {
 	Register(v1.VisitorPluginSocks5UDP, NewSocks5UDPPlugin)
 }
 
-// Socks5UDPPlugin exposes a standard SOCKS5 listener. Reliable connections use
-// the owning STCP/XTCP visitor; datagrams enter a separate local SUDP/XUDP
-// visitor. The local hop keeps the existing UDP transport and recovery logic
-// responsible for selecting the active path.
+// Socks5UDPPlugin exposes a standard SOCKS5 TCP listener on the visitor. SUDP
+// and XUDP establish and authenticate remote UDP sessions using datagrams.
+// Legacy STCP/XTCP visitors retain their remote stream control connection and
+// paired UDP visitor. Both modes use a separate local relay per association;
+// TCP CONNECT is available only in the legacy stream mode.
 type Socks5UDPPlugin struct {
 	pluginCtx  PluginContext
 	listener   net.Listener
 	udpAddr    *net.UDPAddr
 	packetSize int
+	standalone bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -69,17 +71,36 @@ func NewSocks5UDPPlugin(pluginCtx PluginContext, options v1.VisitorPluginOptions
 	if !ok || opts == nil {
 		return nil, errors.New("invalid socks5_udp visitor options")
 	}
-	if pluginCtx.SendConnToVisitor == nil {
-		return nil, errors.New("socks5_udp requires a stream visitor")
+	standalone := pluginCtx.ProxyType == "sudp" || pluginCtx.ProxyType == "xudp"
+	var udpAddr *net.UDPAddr
+	if standalone {
+		if pluginCtx.SecretKey == "" || pluginCtx.DialDatagram == nil {
+			return nil, errors.New("standalone socks5_udp requires a UDP visitor and a nonempty secretKey")
+		}
+		if opts.UDPVisitorAddr != "" {
+			return nil, errors.New("standalone socks5_udp manages its own UDP visitor ingress")
+		}
+	} else {
+		if pluginCtx.SendConnToVisitor == nil {
+			return nil, errors.New("socks5_udp requires a stream visitor")
+		}
+		host, port, err := net.SplitHostPort(opts.UDPVisitorAddr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid udpVisitorAddr: %w", err)
+		}
+		ip := net.ParseIP(host)
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 || ip == nil || !ip.IsLoopback() {
+			return nil, errors.New("udpVisitorAddr must be a loopback IP and a valid port")
+		}
+		udpAddr = &net.UDPAddr{IP: ip, Port: n}
 	}
-	host, port, err := net.SplitHostPort(opts.UDPVisitorAddr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid udpVisitorAddr: %w", err)
+	packetSize := pluginCtx.UDPPacketSize
+	if packetSize <= 0 {
+		packetSize = 1500
 	}
-	ip := net.ParseIP(host)
-	n, err := strconv.Atoi(port)
-	if err != nil || n < 1 || n > 65535 || ip == nil || !ip.IsLoopback() {
-		return nil, errors.New("udpVisitorAddr must be a loopback IP and a valid port")
+	if standalone && (packetSize < 128 || packetSize > 65535) {
+		return nil, errors.New("standalone socks5_udp packet size must be between 128 and 65535")
 	}
 	bindAddr := opts.BindAddr
 	if bindAddr == "" {
@@ -94,15 +115,12 @@ func NewSocks5UDPPlugin(pluginCtx PluginContext, options v1.VisitorPluginOptions
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
-	packetSize := pluginCtx.UDPPacketSize
-	if packetSize <= 0 {
-		packetSize = 1500
-	}
 	return &Socks5UDPPlugin{
 		pluginCtx:  pluginCtx,
 		listener:   listener,
-		udpAddr:    &net.UDPAddr{IP: ip, Port: n},
+		udpAddr:    udpAddr,
 		packetSize: packetSize,
+		standalone: standalone,
 		ctx:        ctx,
 		cancel:     cancel,
 		clients:    make(map[net.Conn]net.Conn),
@@ -142,7 +160,9 @@ func (p *Socks5UDPPlugin) shutdown() {
 	_ = p.listener.Close()
 	for client, control := range p.clients {
 		_ = client.Close()
-		_ = control.Close()
+		if control != nil {
+			_ = control.Close()
+		}
 	}
 	p.mu.Unlock()
 }
@@ -158,6 +178,10 @@ func (p *Socks5UDPPlugin) acceptLoop() {
 		client, err := p.listener.Accept()
 		if err != nil {
 			return
+		}
+		if p.standalone {
+			p.startDatagramClient(client)
+			continue
 		}
 		control, visitorConn := net.Pipe()
 		p.mu.Lock()

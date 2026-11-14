@@ -176,6 +176,10 @@ bindPort = %d
 })
 
 func openSOCKS5TestControl(entry, username, password string) (net.Conn, error) {
+	return openSOCKS5TestControlWithTimeout(entry, username, password, 10*time.Second)
+}
+
+func openSOCKS5TestControlWithTimeout(entry, username, password string, timeout time.Duration) (net.Conn, error) {
 	conn, err := net.DialTimeout("tcp", entry, 3*time.Second)
 	if err != nil {
 		return nil, err
@@ -184,7 +188,7 @@ func openSOCKS5TestControl(entry, username, password string) (net.Conn, error) {
 		_ = conn.Close()
 		return nil, err
 	}
-	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return fail(err)
 	}
 	method := byte(0)
@@ -288,7 +292,11 @@ type socks5TestAssociation struct {
 }
 
 func newSOCKS5TestAssociation(entry, username, password string) *socks5TestAssociation {
-	control, err := openSOCKS5TestControl(entry, username, password)
+	return newSOCKS5TestAssociationWithTimeout(entry, username, password, 10*time.Second)
+}
+
+func newSOCKS5TestAssociationWithTimeout(entry, username, password string, timeout time.Duration) *socks5TestAssociation {
+	control, err := openSOCKS5TestControlWithTimeout(entry, username, password, timeout)
 	framework.ExpectNoError(err)
 	ginkgo.DeferCleanup(func() { _ = control.Close() })
 	relay, err := socks5TestCommand(control, 3, "0.0.0.0", 0)

@@ -55,8 +55,8 @@ func validateVisitorBaseConfig(c *v1.VisitorBaseConfig) error {
 		return errors.New("bind port is required")
 	}
 	if c.Plugin.Type == v1.VisitorPluginSocks5UDP {
-		if c.Type != "stcp" && c.Type != "xtcp" {
-			return errors.New("socks5_udp visitor plugin requires STCP/XTCP")
+		if c.Type != "stcp" && c.Type != "xtcp" && c.Type != "sudp" && c.Type != "xudp" {
+			return errors.New("socks5_udp visitor plugin requires STCP/XTCP or SUDP/XUDP")
 		}
 		if c.BindPort != -1 {
 			return errors.New("socks5_udp visitor requires bindPort = -1; configure the SOCKS5 listener in plugin.bindPort")
@@ -73,6 +73,15 @@ func validateVisitorBaseConfig(c *v1.VisitorBaseConfig) error {
 		}
 		if options.BindAddr != "" && net.ParseIP(options.BindAddr) == nil {
 			return errors.New("socks5_udp plugin.bindAddr must be an IP address")
+		}
+		if c.Type == "sudp" || c.Type == "xudp" {
+			if c.SecretKey == "" {
+				return errors.New("socks5_udp datagram sessions require a nonempty secretKey")
+			}
+			if options.UDPVisitorAddr != "" {
+				return errors.New("standalone socks5_udp visitor must not set plugin.udpVisitorAddr")
+			}
+			return nil
 		}
 		host, port, err := net.SplitHostPort(options.UDPVisitorAddr)
 		if err != nil {

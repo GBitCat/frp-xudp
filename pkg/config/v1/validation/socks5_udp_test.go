@@ -78,3 +78,71 @@ func TestSocks5UDPVisitorValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestSocks5UDPStandaloneProxyValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name, proxyType, mode, secret, pair string
+		valid                               bool
+	}{
+		{"sudp", "sudp", "datagram", "shared-secret", "", true},
+		{"xudp", "xudp", "datagram", "shared-secret", "", true},
+		{"missing-secret", "sudp", "datagram", "", "", false},
+		{"missing-p2p-secret", "xudp", "datagram", "", "", false},
+		{"paired-name-forbidden", "sudp", "datagram", "shared-secret", "another", false},
+		{"stream-role-forbidden", "stcp", "datagram", "shared-secret", "another", false},
+		{"unknown-mode", "sudp", "future", "shared-secret", "", false},
+		{"legacy-requires-control-credentials", "sudp", "paired", "shared-secret", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := v1.NewProxyConfigurerByType(v1.ProxyType(tc.proxyType))
+			base := cfg.GetBaseConfig()
+			base.Name = "data"
+			base.Plugin = v1.TypedClientPluginOptions{Type: v1.PluginSocks5UDP, ClientPluginOptions: &v1.Socks5UDPPluginOptions{
+				Type: v1.PluginSocks5UDP, SessionMode: tc.mode, Username: "alice", UDPProxyName: tc.pair,
+			}}
+			switch c := cfg.(type) {
+			case *v1.SUDPProxyConfig:
+				c.Secretkey = tc.secret
+			case *v1.XUDPProxyConfig:
+				c.Secretkey = tc.secret
+			}
+			cfg.Complete()
+			err := ValidateProxyConfigurerForClient(cfg)
+			if tc.valid {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
+}
+
+func TestSocks5UDPStandaloneVisitorValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name, visitorType, secret, udpAddr string
+		bindPort                           int
+		valid                              bool
+	}{
+		{"sudp", "sudp", "shared-secret", "", -1, true},
+		{"xudp", "xudp", "shared-secret", "", -1, true},
+		{"missing-secret", "sudp", "", "", -1, false},
+		{"raw-listener", "sudp", "shared-secret", "", 1235, false},
+		{"paired-udp-address", "xudp", "shared-secret", "127.0.0.1:1235", -1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := v1.NewVisitorConfigurerByType(v1.VisitorType(tc.visitorType))
+			base := cfg.GetBaseConfig()
+			base.Name, base.ServerName, base.SecretKey, base.BindPort = "visitor", "data", tc.secret, tc.bindPort
+			base.Plugin = v1.TypedVisitorPluginOptions{Type: v1.VisitorPluginSocks5UDP, VisitorPluginOptions: &v1.Socks5UDPVisitorPluginOptions{
+				Type: v1.VisitorPluginSocks5UDP, BindPort: 1234, UDPVisitorAddr: tc.udpAddr,
+			}}
+			cfg.Complete()
+			err := ValidateVisitorConfigurer(cfg)
+			if tc.valid {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
+}

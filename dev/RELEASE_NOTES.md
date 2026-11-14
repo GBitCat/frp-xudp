@@ -1,4 +1,18 @@
-本次 `0.72.0` 更新同步上游开发分支，并新增 SUDP / XUDP 的 SOCKS5 UDP 插件支持。
+本次覆盖更新保持版本号 `0.72.0`，在已同步上游的基础上增加 SUDP / XUDP 自主 SOCKS5 UDP 会话。
+
+## 本次覆盖更新：UDP 自主管理会话
+
+- 提供端在 SUDP/XUDP 的 `socks5_udp` 插件中设置 `sessionMode = "datagram"`，即可自行完成认证、
+  建立、续期和关闭会话，无需 STCP/XTCP 控制代理或 `udpProxyName`。
+- visitor 直接使用 SUDP/XUDP 的 `socks5_udp` 插件提供本地标准 SOCKS5 入口；内部数据端口自动分配，
+  无需额外 visitor 块或 `udpVisitorAddr`。此模式仅允许 UDP `ASSOCIATE`，不接受 TCP `CONNECT`。
+- 应用到 visitor 的 TCP 协商接口保持标准兼容；跨端会话控制使用加密报文、应答重试、会话有效期和防重放，
+  支持失联清理及 XUDP 直连/中继切换；插件不对业务 UDP 额外重传，底层中继仍使用现有可靠传输。
+- visitor 关闭或重载时先通过存活的通道撤销会话，再关闭传输；关闭通知全部丢失时仍有界退出，
+  提供端通过会话有效期回收资源。
+- 省略 `sessionMode` 或设置 `"paired"` 保留原有配对行为，避免旧配置的认证策略被隐式改变。
+- 两端 frpc 均须升级到本次构建，并使用相同且非空的 `secretKey`。版本字符串仍为 `0.72.0`，
+  请依据新的安装包校验和确认更新。原有安装包将由本次构建替换。
 
 ## 同步上游更新
 
@@ -29,15 +43,15 @@
 - 限速等待可在连接关闭时取消，避免 SUDP/XUDP 及 SOCKS5 控制通道的关闭、重载被积压的限速等待阻塞。
 - 将控制通道建立与 SOCKS5 握手分别计时，避免 XTCP 较慢的打洞或回退提前耗尽握手期限。
 - 修复 frps QUIC 监听器关闭后的 UDP 端口回收，保留启动失败时的资源清理。
-- Docker 全量端到端测试 264 项通过、2 项既有跳过；单元测试、相关竞态检查及静态检查通过。
+- Docker 全量端到端测试通过，涵盖 4 组自主模式和 3 组原配对模式场景；单元测试、相关竞态检查及静态检查通过。
   已验证真实 QUIC DATAGRAM 数据通道与直连/中继切换；公网 NAT 打洞成功率尚未实测。
 - 常规协议兼容性测试覆盖最近 8 个上游稳定版本（0.68.1 至 0.72.0）及支持下限 0.61.0，
   共 58 项通过、14 项预期跳过，验证新旧 frpc/frps 组合的默认协议与 UDP 传输。
 
 ## 使用说明
 
-启用 `socks5_udp` 需要同时升级提供端和访问端 frpc，并成对配置 TCP 控制代理与 UDP 数据代理。
-SOCKS5 协商、认证和会话控制仍使用 TCP；UDP 应用须支持 `UDP ASSOCIATE`，
-使用回复中的 UDP 接收地址，并保持 TCP 控制连接。原有 `socks5` 插件继续提供 TCP 功能。
+自主模式只需要一个 SUDP/XUDP 代理及对应 visitor；原有配对模式仍可同时处理 TCP 与 UDP。
+UDP 应用须支持 `UDP ASSOCIATE`，使用回复中的 UDP 接收地址，并保持应用到 visitor 的 TCP 控制连接。
+原有 `socks5` 插件继续提供 TCP 功能。
 
 完整配置见 [SOCKS5 TCP/UDP 双端示例](https://github.com/GBitCat/frp-xudp/blob/v0.72.0/doc/socks5-udp.md)。

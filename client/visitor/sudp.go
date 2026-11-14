@@ -40,6 +40,7 @@ type SUDPVisitor struct {
 	workers     sync.WaitGroup
 	lifecycleMu sync.Mutex
 	lifecycle   sudpLifecycleState
+	closeDone   chan struct{}
 
 	// listenUDPFn is nil in production. It allows startup/commit races to be
 	// tested with a real socket without making net.ListenUDP cancellable.
@@ -176,7 +177,11 @@ func (sv *SUDPVisitor) Run() (err error) {
 
 	xl := xlog.FromContextSafe(sv.ctx)
 
-	addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(sv.cfg.BindAddr, strconv.Itoa(sv.cfg.BindPort)))
+	bindAddress := net.JoinHostPort(sv.cfg.BindAddr, strconv.Itoa(sv.cfg.BindPort))
+	if standaloneDatagramPlugin(sv.cfg.GetBaseConfig()) {
+		bindAddress = "127.0.0.1:0"
+	}
+	addr, err := net.ResolveUDPAddr("udp", bindAddress)
 	if err != nil {
 		return sv.failStartup(fmt.Errorf("sudp ResolveUDPAddr error: %v", err))
 	}
@@ -211,6 +216,11 @@ func (sv *SUDPVisitor) Run() (err error) {
 	sv.workers.Add(2)
 	sv.lifecycle = sudpRunning
 	sv.lifecycleMu.Unlock()
+	if standaloneDatagramPlugin(sv.cfg.GetBaseConfig()) {
+		sv.mu.Lock()
+		sv.datagramAddr = udpConn.LocalAddr().(*net.UDPAddr)
+		sv.mu.Unlock()
+	}
 
 	xl.Infof("sudp start to work, listen on %s", addr)
 
@@ -222,25 +232,15 @@ func (sv *SUDPVisitor) Run() (err error) {
 		defer sv.workers.Done()
 		udp.ForwardUserConn(udpConn, readCh, sendCh, int(sv.clientCfg.UDPPacketSize))
 	}()
+	if sv.plugin != nil {
+		sv.plugin.Start()
+	}
 
 	return
 }
 
 func (sv *SUDPVisitor) failStartup(err error) error {
-	shouldCloseBase := false
-	sv.lifecycleMu.Lock()
-	if sv.lifecycle == sudpStarting {
-		sv.lifecycle = sudpClosed
-		if sv.checkCloseCh == nil {
-			sv.checkCloseCh = make(chan struct{})
-		}
-		close(sv.checkCloseCh)
-		shouldCloseBase = true
-	}
-	sv.lifecycleMu.Unlock()
-	if shouldCloseBase {
-		sv.BaseVisitor.Close()
-	}
+	sv.Close()
 	return err
 }
 
@@ -450,23 +450,31 @@ func (sv *SUDPVisitor) getNewVisitorConn() (net.Conn, func(), error) {
 func (sv *SUDPVisitor) Close() {
 	sv.lifecycleMu.Lock()
 	if sv.lifecycle == sudpClosed {
+		done := sv.closeDone
 		sv.lifecycleMu.Unlock()
-		sv.workers.Wait()
+		if done != nil {
+			<-done
+		}
 		return
 	}
 	sv.lifecycle = sudpClosed
+	sv.closeDone = make(chan struct{})
+	done := sv.closeDone
 	if sv.checkCloseCh == nil {
 		sv.checkCloseCh = make(chan struct{})
 	}
-	close(sv.checkCloseCh)
+	closeCh := sv.checkCloseCh
 	udpConn := sv.udpConn
 	sv.lifecycleMu.Unlock()
 
 	// The state is closed before any external cleanup, so a concurrent Run
-	// cannot commit a new socket or add workers after this Wait.
+	// cannot commit a new socket or add workers after this Wait. Keep the UDP
+	// forwarding path alive until the plugin's bounded session CLOSE completes.
 	sv.BaseVisitor.Close()
+	close(closeCh)
 	if udpConn != nil {
 		_ = udpConn.Close()
 	}
 	sv.workers.Wait()
+	close(done)
 }

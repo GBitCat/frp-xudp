@@ -33,6 +33,7 @@ import (
 	"github.com/fatedier/frp/pkg/util/util"
 	"github.com/fatedier/frp/pkg/util/xlog"
 	"github.com/fatedier/frp/pkg/vnet"
+	xudptransport "github.com/fatedier/frp/pkg/xudp/transport"
 )
 
 // Helper wraps some functions for visitor to use.
@@ -84,16 +85,29 @@ func NewVisitor(
 		internalLn: netpkg.NewInternalListener(),
 	}
 	if cfg.GetBaseConfig().Plugin.Type != "" {
+		packetSize := int(clientCfg.UDPPacketSize)
+		if packetSize <= 0 {
+			packetSize = 1500
+		}
+		if cfg.GetBaseConfig().Type == "xudp" && cfg.GetBaseConfig().Plugin.Type == v1.VisitorPluginSocks5UDP {
+			// The internal UDP hop is always IPv4. Account for the address and
+			// length fields in the enclosing FRP binary UDP packet as well.
+			empty, _ := msg.EncodeUDPPacketBinary(&msg.UDPPacket{RemoteAddr: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)}})
+			packetSize = min(packetSize, xudptransport.ConservativeXUDPDatagramPayloadLimit-len(empty))
+		}
 		p, err := plugin.Create(
 			cfg.GetBaseConfig().Plugin.Type,
 			plugin.PluginContext{
 				Name:           cfg.GetBaseConfig().Name,
-				UDPPacketSize:  int(clientCfg.UDPPacketSize),
+				ProxyType:      cfg.GetBaseConfig().Type,
+				SecretKey:      cfg.GetBaseConfig().SecretKey,
+				UDPPacketSize:  packetSize,
 				Ctx:            ctx,
 				VnetController: helper.VNetController(),
 				SendConnToVisitor: func(conn net.Conn) {
 					_ = baseVisitor.AcceptConn(conn)
 				},
+				DialDatagram: baseVisitor.dialDatagram,
 			},
 			cfg.GetBaseConfig().Plugin.VisitorPluginOptions,
 		)
@@ -135,9 +149,26 @@ type BaseVisitor struct {
 	l          net.Listener
 	internalLn *netpkg.InternalListener
 	plugin     plugin.Plugin
+	// datagramAddr is only populated for a standalone UDP plugin. Its
+	// private socket is never exposed through the configured SOCKS address.
+	datagramAddr *net.UDPAddr
 
 	mu  sync.RWMutex
 	ctx context.Context
+}
+
+func (v *BaseVisitor) dialDatagram(ctx context.Context) (net.Conn, error) {
+	v.mu.RLock()
+	addr := v.datagramAddr
+	v.mu.RUnlock()
+	if addr == nil {
+		return nil, fmt.Errorf("UDP visitor is not ready")
+	}
+	return (&net.Dialer{}).DialContext(ctx, "udp4", addr.String())
+}
+
+func standaloneDatagramPlugin(cfg *v1.VisitorBaseConfig) bool {
+	return (cfg.Type == "sudp" || cfg.Type == "xudp") && cfg.Plugin.Type == v1.VisitorPluginSocks5UDP
 }
 
 func (v *BaseVisitor) AcceptConn(conn net.Conn) error {

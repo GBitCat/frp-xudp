@@ -22,8 +22,8 @@ var (
 // EndpointOptions bounds the resources used by one UDP proxy. Zero values use
 // conservative defaults. Target limits apply to cached destination addresses.
 // IdleTimeout expires those addresses and their permission to send replies;
-// sockets with no remaining targets are closed. The TCP connection controls
-// the association's lifetime.
+// sockets with no remaining targets are closed. Legacy associations follow
+// their TCP connection; datagram sessions are explicitly leased and revoked.
 type EndpointOptions struct {
 	MaxAssociations          int
 	MaxTargetsPerAssociation int
@@ -132,13 +132,19 @@ func (e *Endpoint) addAssociation(ctx context.Context, control net.Conn) (*assoc
 }
 
 func (e *Endpoint) removeAssociation(a *association) {
+	e.detachAssociation(a)
+	a.wg.Wait()
+}
+
+// detachAssociation revokes immediately without waiting for DNS or socket
+// workers. Datagram control handlers use it before acknowledging CLOSE.
+func (e *Endpoint) detachAssociation(a *association) {
 	e.mu.Lock()
 	if e.associations[a.token] == a {
 		delete(e.associations, a.token)
 	}
 	e.mu.Unlock()
 	a.shutdown()
-	a.wg.Wait()
 }
 
 // HandlePacket queues one capability-authenticated datagram. DNS and network
@@ -237,7 +243,9 @@ func (a *association) shutdown() {
 	}
 	clear(a.sockets)
 	a.mu.Unlock()
-	_ = a.control.Close()
+	if a.control != nil {
+		_ = a.control.Close()
+	}
 }
 
 func (a *association) run() {

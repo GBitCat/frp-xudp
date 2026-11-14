@@ -27,6 +27,9 @@ import (
 type PluginContext struct {
 	// Name is the unique identifier for this visitor, used for logging and routing.
 	Name string
+	// ProxyType and SecretKey identify standalone private UDP visitors.
+	ProxyType string
+	SecretKey string
 	// UDPPacketSize bounds the encoded payload accepted by the UDP visitor.
 	UDPPacketSize int
 
@@ -39,6 +42,10 @@ type PluginContext struct {
 	// SendConnToVisitor sends a connection to the visitor's internal processing queue.
 	// Does not return error; failures are handled by closing the connection.
 	SendConnToVisitor func(net.Conn)
+
+	// DialDatagram opens a connected UDP socket to a private, loopback-only
+	// ingress owned by a SUDP/XUDP visitor. It is ready before Start is called.
+	DialDatagram func(context.Context) (net.Conn, error)
 }
 
 // Creators is used for create plugins to handle connections.

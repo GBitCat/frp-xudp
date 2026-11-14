@@ -76,13 +76,14 @@ func (o *VirtualNetVisitorPluginOptions) Clone() VisitorPluginOptions {
 	return &out
 }
 
-// Socks5UDPVisitorPluginOptions exposes a standard SOCKS5 listener over a
-// STCP/XTCP visitor and a local SUDP/XUDP visitor's UDP listener.
+// Socks5UDPVisitorPluginOptions exposes a standard SOCKS5 listener. SUDP/XUDP
+// visitors manage their own datagram sessions; legacy STCP/XTCP visitors pair
+// with a separate local UDP visitor using UDPVisitorAddr.
 type Socks5UDPVisitorPluginOptions struct {
 	Type           string `json:"type"`
 	BindAddr       string `json:"bindAddr,omitempty"`
 	BindPort       int    `json:"bindPort"`
-	UDPVisitorAddr string `json:"udpVisitorAddr"`
+	UDPVisitorAddr string `json:"udpVisitorAddr,omitempty"`
 }
 
 func (o *Socks5UDPVisitorPluginOptions) Complete() {

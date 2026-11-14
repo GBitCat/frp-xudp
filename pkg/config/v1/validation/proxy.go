@@ -82,13 +82,22 @@ func validateSocks5UDPProxy(c *v1.ProxyBaseConfig) error {
 	if len(options.Username) > 255 || len(options.Password) > 255 {
 		return errors.New("socks5_udp username/password must be at most 255 bytes")
 	}
+	if options.SessionMode != "" && options.SessionMode != "paired" && options.SessionMode != "datagram" {
+		return errors.New("socks5_udp sessionMode must be paired or datagram")
+	}
 	switch c.Type {
 	case "stcp", "xtcp":
+		if options.SessionMode == "datagram" {
+			return errors.New("socks5_udp datagram sessions require SUDP/XUDP")
+		}
 		if options.UDPProxyName == "" || options.UDPProxyName == c.Name {
 			return errors.New("socks5_udp requires udpProxyName naming a separate SUDP/XUDP proxy")
 		}
 	case "sudp", "xudp":
-		if options.UDPProxyName != "" || options.Username != "" || options.Password != "" {
+		if options.UDPProxyName != "" {
+			return errors.New("socks5_udp udpProxyName belongs on the paired STCP/XTCP proxy")
+		}
+		if options.SessionMode != "datagram" && (options.Username != "" || options.Password != "") {
 			return errors.New("socks5_udp udpProxyName and credentials belong on the STCP/XTCP proxy")
 		}
 	default:
@@ -199,10 +208,19 @@ func validateXTCPProxyConfigForClient(c *v1.XTCPProxyConfig) error {
 }
 
 func validateXUDPProxyConfigForClient(c *v1.XUDPProxyConfig) error {
-	return nil
+	return validateSocks5DatagramSecret(c.GetBaseConfig(), c.Secretkey)
 }
 
 func validateSUDPProxyConfigForClient(c *v1.SUDPProxyConfig) error {
+	return validateSocks5DatagramSecret(c.GetBaseConfig(), c.Secretkey)
+}
+
+func validateSocks5DatagramSecret(c *v1.ProxyBaseConfig, secret string) error {
+	if c.Plugin.Type == v1.PluginSocks5UDP {
+		if options, ok := c.Plugin.ClientPluginOptions.(*v1.Socks5UDPPluginOptions); ok && options.SessionMode == "datagram" && secret == "" {
+			return errors.New("socks5_udp datagram sessions require a nonempty secretKey")
+		}
+	}
 	return nil
 }
 
