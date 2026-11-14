@@ -186,14 +186,17 @@ type Socks5PluginOptions struct {
 	Password string `json:"password,omitempty"`
 }
 
-// Socks5UDPPluginOptions configures one half of a paired SOCKS5 proxy.
-// STCP/XTCP handles authentication and control; SUDP/XUDP carries datagrams.
+// Socks5UDPPluginOptions supports legacy paired sessions and autonomous
+// datagram sessions on private UDP proxies.
 type Socks5UDPPluginOptions struct {
 	Type     string `json:"type,omitempty"`
 	Username string `json:"username,omitempty"`
 	Password string `json:"password,omitempty"`
+	// SessionMode is "paired" (the default) or "datagram". The latter moves
+	// authentication and session management into the SUDP/XUDP data channel.
+	SessionMode string `json:"sessionMode,omitempty"`
 	// UDPProxyName is the local name of the SUDP/XUDP proxy in this frpc.
-	// It is required on the STCP/XTCP side and empty on the UDP side.
+	// It is required on the paired STCP/XTCP side and empty on the UDP side.
 	UDPProxyName string `json:"udpProxyName,omitempty"`
 }
 

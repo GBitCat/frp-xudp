@@ -1,3 +1,10 @@
+## Rebuilt v0.72.0: Autonomous SOCKS5 UDP Sessions
+
+* Added `sessionMode = "datagram"` to the SUDP/XUDP `socks5_udp` plugin. Authentication, creation, renewal and closure now run over the datagram channel without a paired STCP/XTCP proxy or `udpProxyName`.
+* SUDP/XUDP visitors can expose a standard local SOCKS5 UDP entry directly, with an automatically allocated private UDP transport socket. The application keeps its standard SOCKS5 TCP connection locally; this mode only accepts UDP ASSOCIATE.
+* Session control uses encrypted authenticated frames, retries, replay protection and bounded leases. Logical sessions retain UDP target mappings across XUDP direct/relay transitions. Omitted `sessionMode` preserves the existing paired configuration and authentication policy.
+* Both frpc endpoints must use this rebuilt package and a matching nonempty `secretKey`. The version remains `0.72.0`; identify the updated archives using the release checksums.
+
 ## Upstream Sync
 
 * Synced 48 commits from `fatedier/frp`'s development branch through `a2c975efb5e55102068065d61cfc17ffe34e939d`, preserving this fork's XUDP direct transport, relay fallback and recovery. This fork release is version `0.72.0`; its upstream baseline is a development commit.

@@ -33,6 +33,8 @@ type PluginContext struct {
 	Name          string
 	ProxyType     string
 	UDPPacketSize int
+	// SecretKey authenticates autonomous datagram session frames end to end.
+	SecretKey string
 	// SharedStore is scoped to one proxy manager, including across config reloads.
 	SharedStore    *sync.Map
 	VnetController *vnet.Controller

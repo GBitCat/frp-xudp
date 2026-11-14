@@ -80,6 +80,12 @@ func NewProxy(
 		ctx:            ctx,
 		udpPacketCodec: udpPacketCodec,
 	}
+	switch cfg := pxyConf.(type) {
+	case *v1.SUDPProxyConfig:
+		baseProxy.secretKey = cfg.Secretkey
+	case *v1.XUDPProxyConfig:
+		baseProxy.secretKey = cfg.Secretkey
+	}
 
 	factory := proxyFactoryRegistry[reflect.TypeOf(pxyConf)]
 	if factory == nil {
@@ -92,6 +98,7 @@ type BaseProxy struct {
 	baseCfg        *v1.ProxyBaseConfig
 	clientCfg      *v1.ClientCommonConfig
 	encryptionKey  []byte
+	secretKey      string
 	msgTransporter transport.MessageTransporter
 	vnetController *vnet.Controller
 	limiter        *rate.Limiter
@@ -118,6 +125,7 @@ func (pxy *BaseProxy) Run() error {
 			Name:           pxy.baseCfg.Name,
 			ProxyType:      pxy.baseCfg.Type,
 			UDPPacketSize:  int(pxy.clientCfg.UDPPacketSize),
+			SecretKey:      pxy.secretKey,
 			SharedStore:    plugin.SharedStoreFromContext(pxy.ctx),
 			VnetController: pxy.vnetController,
 		}, pxy.baseCfg.Plugin.ClientPluginOptions)

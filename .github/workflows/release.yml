@@ -13,9 +13,18 @@ on:
         required: false
         default: ''
         type: string
+      replace_existing:
+        description: '覆盖同标签现有 Release 的安装包和说明（仅构建成功后执行）'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
+
+concurrency:
+  group: frp-release-packages
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -67,24 +76,55 @@ jobs:
             echo "invalid release version input" >&2
             exit 1
           fi
+          if [[ "$VERSION" != "$(./bin/frps --version)" || "$VERSION" != "$(./bin/frpc --version)" ]]; then
+            echo "release version must match both built binaries" >&2
+            exit 1
+          fi
           printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
           echo "package version: $VERSION"
         env:
           INPUT_RELEASE_VERSION: ${{ inputs.release_version }}
 
-      - name: Create GitHub release
+      - name: Publish GitHub release
         if: ${{ inputs.dry_run == false }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
+          REPLACE_EXISTING: ${{ inputs.replace_existing }}
         run: |
           set -euo pipefail
+          TAG="v${VERSION}"
+          if [[ "$(git rev-parse "refs/tags/${TAG}^{commit}")" != "$GITHUB_SHA" ]]; then
+            echo "release tag must point to the exact build commit" >&2
+            exit 1
+          fi
+          REMOTE_TAG_COMMIT="$(gh api "repos/${GITHUB_REPOSITORY}/commits/refs/tags/${TAG}" --jq '.sha')"
+          if [[ "$REMOTE_TAG_COMMIT" != "$GITHUB_SHA" ]]; then
+            echo "release tag changed while building; refusing to publish stale packages" >&2
+            exit 1
+          fi
           {
             echo "# frp-xudp v${VERSION}"
             echo ""
             cat dev/RELEASE_NOTES.md
           } > /tmp/release-notes.md
-          gh release create "v${VERSION}" release/packages/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "frp-xudp ${VERSION} — XUDP P2P UDP Proxy" \
-            --notes-file /tmp/release-notes.md
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [[ "$REPLACE_EXISTING" != "true" ]]; then
+              echo "release already exists; explicitly enable replace_existing to replace it" >&2
+              exit 1
+            fi
+            # Keep the previous release available until all new packages have
+            # built successfully. Publish checksums after replacing archives.
+            gh release upload "$TAG" release/packages/*.tar.gz release/packages/*.zip \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload "$TAG" release/packages/frp_sha256_checksums.txt \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "frp-xudp ${VERSION} — XUDP P2P UDP Proxy" \
+              --notes-file /tmp/release-notes.md --latest
+          else
+            gh release create "$TAG" release/packages/* \
+              --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "frp-xudp ${VERSION} — XUDP P2P UDP Proxy" \
+              --notes-file /tmp/release-notes.md
+          fi

@@ -1,5 +1,31 @@
 # Release Process
 
+## Fork package workflow
+
+This fork also provides `.github/workflows/release.yml` (`Build Release Packages`),
+which publishes notes from `dev/RELEASE_NOTES.md`. Its release tag must already
+point to the exact commit being built, and the requested version must match both
+built binaries. Use the tested `dev` commit when publishing this fork.
+
+For an explicitly requested rebuild of an existing release, keep the binary
+version unchanged, update the tag to the tested commit using a lease against the
+previous remote tag object, and dispatch this workflow on that tag:
+
+```bash
+gh workflow run release.yml --ref v0.72.0 \
+  -f release_version=0.72.0 -f dry_run=false -f replace_existing=true
+```
+
+Release runs are serialized, and the workflow checks the live remote tag again
+before publishing so an older build cannot overwrite a subsequently moved tag.
+`replace_existing` defaults to false. When enabled, the workflow finishes all
+platform builds before overwriting the existing archives, then replaces the
+checksum file and release notes. Asset replacement is not atomic. Verify the
+published asset digests and a downloaded archive after completion; the unchanged
+version string alone does not identify the new build.
+
+The upstream GoReleaser process is documented below.
+
 ## 1. Update Release Notes
 
 Edit `Release.md` in the project root with the changes for this version:

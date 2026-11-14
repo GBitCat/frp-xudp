@@ -17,6 +17,7 @@ import (
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/plugin/socks5udp"
 	netpkg "github.com/fatedier/frp/pkg/util/net"
+	xudptransport "github.com/fatedier/frp/pkg/xudp/transport"
 )
 
 func init() { Register(v1.PluginSocks5UDP, NewSocks5UDPPlugin) }
@@ -30,6 +31,7 @@ type Socks5UDPPlugin struct {
 	store      *sync.Map
 	key        socks5EndpointKey
 	endpoint   *socks5udp.Endpoint
+	sessions   *socks5udp.DatagramServer
 	packetSize int
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -44,7 +46,10 @@ func NewSocks5UDPPlugin(pluginCtx PluginContext, options v1.ClientPluginOptions)
 	if !ok || opts == nil {
 		return nil, fmt.Errorf("invalid socks5_udp options")
 	}
-	if pluginCtx.SharedStore == nil {
+	if opts.SessionMode != "" && opts.SessionMode != "paired" && opts.SessionMode != "datagram" {
+		return nil, fmt.Errorf("socks5_udp sessionMode must be paired or datagram")
+	}
+	if pluginCtx.SharedStore == nil && opts.SessionMode != "datagram" {
 		return nil, fmt.Errorf("socks5_udp requires a proxy manager shared store")
 	}
 	p := &Socks5UDPPlugin{opts: *opts, store: pluginCtx.SharedStore, packetSize: pluginCtx.UDPPacketSize}
@@ -54,6 +59,28 @@ func NewSocks5UDPPlugin(pluginCtx PluginContext, options v1.ClientPluginOptions)
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 	switch pluginCtx.ProxyType {
 	case "sudp", "xudp":
+		if opts.SessionMode == "datagram" {
+			if opts.UDPProxyName != "" {
+				p.cancel()
+				return nil, fmt.Errorf("standalone socks5_udp must not set udpProxyName")
+			}
+			if pluginCtx.ProxyType == "xudp" {
+				// Standalone visitors use a private IPv4 loopback UDP socket.
+				// Reserve the surrounding FRP packet's 11-byte address/header.
+				p.packetSize = min(p.packetSize, xudptransport.ConservativeXUDPDatagramPayloadLimit-11)
+			}
+			p.endpoint = socks5udp.NewEndpoint(socks5udp.EndpointOptions{})
+			var err error
+			p.sessions, err = socks5udp.NewDatagramServer(p.endpoint, socks5udp.DatagramServerOptions{
+				SecretKey: pluginCtx.SecretKey, Username: opts.Username, Password: opts.Password, PacketSize: p.packetSize,
+			})
+			if err != nil {
+				p.cancel()
+				_ = p.endpoint.Close()
+				return nil, err
+			}
+			return p, nil
+		}
 		if opts.UDPProxyName != "" || opts.Username != "" || opts.Password != "" {
 			p.cancel()
 			return nil, fmt.Errorf("socks5_udp credentials and udpProxyName belong on the control proxy")
@@ -66,6 +93,10 @@ func NewSocks5UDPPlugin(pluginCtx PluginContext, options v1.ClientPluginOptions)
 			return nil, fmt.Errorf("socks5_udp endpoint %q is already registered", pluginCtx.Name)
 		}
 	case "stcp", "xtcp":
+		if opts.SessionMode == "datagram" {
+			p.cancel()
+			return nil, fmt.Errorf("socks5_udp datagram sessions require SUDP/XUDP")
+		}
 		if opts.UDPProxyName == "" || opts.UDPProxyName == pluginCtx.Name {
 			p.cancel()
 			return nil, fmt.Errorf("socks5_udp requires a separate udpProxyName")
@@ -121,7 +152,7 @@ func (p *Socks5UDPPlugin) ServePackets(ctx context.Context, readCh <-chan *msg.U
 			}
 			remote := *packet.RemoteAddr
 			remote.IP = append(net.IP(nil), remote.IP...)
-			_ = p.endpoint.HandlePacket(ctx, packet.Content, func(data []byte) {
+			reply := func(data []byte) {
 				if len(data) > p.packetSize || ctx.Err() != nil || p.ctx.Err() != nil {
 					return
 				}
@@ -132,7 +163,12 @@ func (p *Socks5UDPPlugin) ServePackets(ctx context.Context, readCh <-chan *msg.U
 				case sendCh <- response:
 				default:
 				}
-			})
+			}
+			if p.sessions != nil {
+				_ = p.sessions.HandlePacket(ctx, packet.Content, reply)
+			} else {
+				_ = p.endpoint.HandlePacket(ctx, packet.Content, reply)
+			}
 		}
 	}
 }
@@ -144,7 +180,11 @@ func (p *Socks5UDPPlugin) Close() error {
 		p.cancel()
 		p.mu.Unlock()
 		if p.endpoint != nil {
-			p.store.CompareAndDelete(p.key, p.endpoint)
+			if p.sessions != nil {
+				_ = p.sessions.Close()
+			} else {
+				p.store.CompareAndDelete(p.key, p.endpoint)
+			}
 			_ = p.endpoint.Close()
 		}
 		p.workers.Wait()

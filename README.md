@@ -18,9 +18,9 @@
 - **Peer Authentication**：通过 FRP control channel 交换 QUIC 证书
   fingerprint，拒绝伪造 peer
 - **断线恢复**：P2P 断开后自动切到 Relay，Relay 周期探测 P2P 并切回直连
-- **SOCKS5 TCP/UDP 插件**：SUDP 和 XUDP 均支持 `socks5_udp`，与
-  STCP/XTCP 控制代理配对后，应用可按请求选择 TCP、UDP 目标地址和端口，
-  详见[双端配置](doc/socks5-udp.md)
+- **SOCKS5 TCP/UDP 插件**：SUDP 和 XUDP 均支持 `socks5_udp` 自主管理 UDP
+  会话，无需额外 TCP 控制代理；同时保留原有 TCP+UDP 配对模式，详见
+  [双端配置](doc/socks5-udp.md)
 - **会话管理**：Session Table（INIT / PUNCHING / CONNECTED / TIMEOUT），
   自动清理过期会话
 - **Keepalive**：QUIC keepalive 保持 P2P 连接与 NAT 映射存活
@@ -58,20 +58,27 @@ bindPort = 9000
 
 ## SOCKS5 TCP/UDP 插件
 
-从 `0.72.0` 起，使用 `socks5_udp` 插件可通过同一个标准 SOCKS5 入口访问
-提供端的 TCP 和 UDP 服务。目标地址、端口由应用在请求中指定，域名在提供端解析。
+`socks5_udp` 提供标准 SOCKS5 入口，目标地址、端口由应用在请求中指定，域名在提供端解析。
+本次 `0.72.0` 覆盖更新增加自主 UDP 会话模式，两端 frpc 都需更新到本次构建。
 
-| 通道 | 代理类型 | 用途 |
+| 模式 | 代理类型 | 用途 |
 | --- | --- | --- |
-| TCP 控制与 TCP 数据 | `stcp` / `xtcp` | SOCKS5 协商、认证、`UDP ASSOCIATE` 控制连接及 TCP `CONNECT` |
-| UDP 数据 | `sudp` | 通过 frps 中继 |
-| UDP 数据 | `xudp` | 打洞成功后通过 QUIC DATAGRAM 直连，失败时自动回退中继 |
+| 自主 UDP 会话 | 单个 `sudp` / `xudp` 代理及 visitor | 认证、建立、续期、关闭均经数据通道，无需 `udpProxyName` |
+| 原有 TCP+UDP 配对 | `stcp` / `xtcp` 搭配 `sudp` / `xudp` | 同一入口支持 TCP `CONNECT` 和 UDP `ASSOCIATE`，兼容原有配置 |
+| 仅 TCP | `stcp` / `xtcp` 的 `socks5` 插件 | TCP `CONNECT` |
 
-提供端需要成对配置一个 STCP/XTCP 控制代理和一个 SUDP/XUDP 数据代理；
-访问端配置对应的 visitor 和 SOCKS5 入口。SOCKS5 协商及会话控制仍使用 TCP，
-应用需要支持标准 `UDP ASSOCIATE`，并在 UDP 会话期间保持控制连接。
+自主模式在提供端的 `[proxies.plugin]` 配置 `type = "socks5_udp"` 和
+`sessionMode = "datagram"`；访问端直接在 SUDP/XUDP visitor 上配置同名插件、
+外层 `bindPort = -1` 和插件的监听地址、端口，无需 `udpVisitorAddr`。
+账号密码由提供端校验；两端必须配置相同且非空的 `secretKey`，用于保护内部会话报文。
 
-启用该功能需同时升级两端 frpc。原有 `socks5` 插件继续提供 TCP 功能。
+应用到 visitor 保留标准 SOCKS5 TCP 协商连接，并在 UDP 会话期间保持它打开；
+两端 frpc 之间无需独立的 SOCKS5 TCP 控制通道。自主模式只支持 UDP `ASSOCIATE`，
+需要 TCP 业务时另配 `socks5` 或使用原有配对模式。SUDP 走中继；XUDP 直连成功后
+走 QUIC DATAGRAM，失败时自动回退中继。FRP 自身的控制与中继机制保持原样。
+
+省略 `sessionMode` 保持原有配对模式。由于发布版本号保持 `0.72.0`，请依据本次
+Release 说明和 SHA256 清单确认已更新两端安装包。
 完整的 frps、提供端、访问端配置，以及 SUDP 切换 XUDP 的方法见
 [SOCKS5 TCP/UDP 双端示例](doc/socks5-udp.md)。
 

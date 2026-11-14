@@ -279,7 +279,11 @@ func (sv *XUDPVisitor) Run() (err error) {
 
 	xl := xlog.FromContextSafe(sv.ctx)
 
-	addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(sv.cfg.BindAddr, strconv.Itoa(sv.cfg.BindPort)))
+	bindAddress := net.JoinHostPort(sv.cfg.BindAddr, strconv.Itoa(sv.cfg.BindPort))
+	if standaloneDatagramPlugin(sv.cfg.GetBaseConfig()) {
+		bindAddress = "127.0.0.1:0"
+	}
+	addr, err := net.ResolveUDPAddr("udp", bindAddress)
 	if err != nil {
 		sv.mu.Unlock()
 		return fmt.Errorf("xudp resolve udp addr error: %v", err)
@@ -289,6 +293,9 @@ func (sv *XUDPVisitor) Run() (err error) {
 	if err != nil {
 		sv.mu.Unlock()
 		return fmt.Errorf("xudp listen udp port %s error: %v", addr.String(), err)
+	}
+	if standaloneDatagramPlugin(sv.cfg.GetBaseConfig()) {
+		sv.datagramAddr = sv.udpConn.LocalAddr().(*net.UDPAddr)
 	}
 
 	sv.readCh = make(chan *msg.UDPPacket, 1024)
@@ -310,6 +317,9 @@ func (sv *XUDPVisitor) Run() (err error) {
 		udp.ForwardUserConn(sv.udpConn, sv.readCh, sv.sendCh, int(sv.clientCfg.UDPPacketSize))
 	}()
 	sv.mu.Unlock()
+	if sv.plugin != nil {
+		sv.plugin.Start()
+	}
 	return
 }
 
@@ -885,18 +895,23 @@ func (sv *XUDPVisitor) Close() {
 		delete(sv.activeClosers, id)
 	}
 	workers := &sv.workers
-	if cancel != nil {
-		cancel()
-	}
+	sv.mu.Unlock()
+	// Session CLOSE needs the existing UDP path. Stop accepting plugin work
+	// and let its bounded revocation finish before canceling the transport.
+	// Handlers may call DialDatagram, so no visitor lock is held during this wait.
 	sv.BaseVisitor.Close()
-	if udpConn != nil {
-		_ = udpConn.Close()
-	}
+
+	// Publish transport shutdown before cancellation wakes a session worker;
+	// otherwise it could start relay fallback in between these operations.
 	if closeCh != nil {
 		close(closeCh)
 	}
-	sv.mu.Unlock()
-
+	if cancel != nil {
+		cancel()
+	}
+	if udpConn != nil {
+		_ = udpConn.Close()
+	}
 	for _, closer := range activeClosers {
 		closer()
 	}
