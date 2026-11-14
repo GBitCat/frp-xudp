@@ -7,7 +7,9 @@ import {
   formToStoreProxy,
   formToStoreVisitor,
   storeProxyToForm,
+  storeVisitorToForm,
 } from '../src/types/proxy-converters'
+import type { VisitorDefinition } from '../src/types/proxy-store'
 
 describe('proxy converters', () => {
   it('serializes only configured proxy fields into the typed store block', () => {
@@ -92,5 +94,118 @@ describe('proxy converters', () => {
     })
 
     expect(formToStoreVisitor(form).sudp).toEqual({ bindPort: 6000 })
+  })
+
+  it.each(['stcp', 'xtcp', 'sudp'] as const)(
+    'preserves the SOCKS5 listener when editing unrelated %s visitor fields',
+    (type) => {
+      const plugin = {
+        type: 'socks5_udp',
+        bindAddr: '::1',
+        bindPort: 1081,
+        ...(type !== 'sudp' ? { udpVisitorAddr: '[::1]:1235' } : {}),
+        futureOption: { enabled: true },
+      }
+      const config: VisitorDefinition = {
+        name: 'socks',
+        type,
+        [type]: {
+          serverName: 'remote-socks',
+          secretKey: 'shared-key',
+          bindPort: -1,
+          plugin,
+          transport: { useEncryption: true, futureOption: 'keep' },
+          futureField: ['keep'],
+        },
+      }
+      const before = JSON.stringify(config)
+      const form = storeVisitorToForm(config)
+      form.enabled = false
+      form.useEncryption = false
+      form.serverName = 'renamed-remote'
+
+      const updated = formToStoreVisitor(form)
+      expect(updated[type]).toEqual({
+        enabled: false,
+        serverName: 'renamed-remote',
+        secretKey: 'shared-key',
+        bindPort: -1,
+        plugin,
+        transport: { futureOption: 'keep' },
+        futureField: ['keep'],
+      })
+      expect(JSON.stringify(config)).toBe(before)
+      expect(form.originalConfig).toEqual(config)
+    },
+  )
+
+  it('updates SOCKS5 options and supports explicit removal without restoring stale fields', () => {
+    const form = storeVisitorToForm({
+      name: 'socks',
+      type: 'stcp',
+      stcp: {
+        serverName: 'remote',
+        bindPort: -1,
+        plugin: {
+          type: 'socks5_udp',
+          bindAddr: '127.0.0.2',
+          bindPort: 1080,
+          udpVisitorAddr: '127.0.0.1:1235',
+        },
+      },
+    })
+    form.pluginBindAddr = ''
+    form.pluginBindPort = 1082
+    form.pluginUDPVisitorAddr = '127.0.0.1:1236'
+    expect(formToStoreVisitor(form).stcp?.plugin).toEqual({
+      type: 'socks5_udp',
+      bindPort: 1082,
+      udpVisitorAddr: '127.0.0.1:1236',
+    })
+    form.pluginType = ''
+    form.bindPort = 1234
+    expect(formToStoreVisitor(form).stcp).toEqual({
+      serverName: 'remote',
+      bindPort: 1234,
+    })
+  })
+
+  it('preserves an unknown plugin until explicitly changed', () => {
+    const plugin = { type: 'future_plugin', options: { ports: [1234] } }
+    const form = storeVisitorToForm({
+      name: 'future',
+      type: 'stcp',
+      stcp: { bindPort: -1, plugin },
+    })
+    form.serverName = 'new-remote'
+    expect(formToStoreVisitor(form).stcp?.plugin).toEqual(plugin)
+    form.pluginType = 'virtual_net'
+    form.pluginDestinationIP = '10.0.0.1'
+    expect(formToStoreVisitor(form).stcp?.plugin).toEqual({
+      type: 'virtual_net',
+      destinationIP: '10.0.0.1',
+    })
+  })
+
+  it('clears edited XTCP settings while retaining unexposed NAT options', () => {
+    const form = storeVisitorToForm({
+      name: 'visitor',
+      type: 'xtcp',
+      xtcp: {
+        bindPort: -1,
+        protocol: 'kcp',
+        keepTunnelOpen: true,
+        fallbackTo: 'backup',
+        natTraversal: { disableAssistedAddrs: true, futureOption: 'keep' },
+      },
+    })
+    form.protocol = 'quic'
+    form.keepTunnelOpen = false
+    form.fallbackTo = ''
+    form.natTraversalDisableAssistedAddrs = false
+    expect(formToStoreVisitor(form).xtcp).toEqual({
+      bindPort: -1,
+      natTraversal: { futureOption: 'keep' },
+    })
   })
 })

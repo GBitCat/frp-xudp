@@ -86,8 +86,12 @@ const formRules: FormRules = {
           callback(new Error('Bind port is required'))
           return
         }
-        if (value > 65535) {
-          callback(new Error('Bind port must be less than or equal to 65535'))
+        if (!Number.isInteger(value) || value > 65535) {
+          callback(new Error('Bind port must be an integer less than or equal to 65535'))
+          return
+        }
+        if (form.value.pluginType === 'socks5_udp') {
+          callback(value === -1 ? undefined : new Error('Use bind port -1 with socks5_udp'))
           return
         }
         if (form.value.type === 'sudp') {
@@ -100,6 +104,44 @@ const formRules: FormRules = {
         }
         if (value === 0) {
           callback(new Error('Bind port cannot be 0'))
+          return
+        }
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+  pluginBindPort: [
+    {
+      validator: (_rule, value, callback) => {
+        if (form.value.pluginType === 'socks5_udp' &&
+          (!Number.isInteger(value) || value < 1 || value > 65535)) {
+          callback(new Error('SOCKS5 bind port must be an integer from 1 to 65535'))
+          return
+        }
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+  pluginUDPVisitorAddr: [
+    {
+      validator: (_rule, value, callback) => {
+        if (form.value.pluginType === 'socks5_udp' &&
+          form.value.type !== 'sudp' && !value?.trim()) {
+          callback(new Error('UDP visitor address is required for paired SOCKS5'))
+          return
+        }
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+  secretKey: [
+    {
+      validator: (_rule, value, callback) => {
+        if (form.value.pluginType === 'socks5_udp' && form.value.type === 'sudp' && !value) {
+          callback(new Error('Secret key is required for SOCKS5 datagram sessions'))
           return
         }
         callback()

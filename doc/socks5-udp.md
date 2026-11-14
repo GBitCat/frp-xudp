@@ -78,6 +78,16 @@ bindPort = 1234
 将上面两端的 `type = "sudp"` 同时改成 `"xudp"`，即可使用现有的直连、回退与恢复机制。
 逻辑会话与当前传输路径分离，短暂切换时保留目标 UDP 出口映射。认证及会话控制报文会重试，业务 UDP 数据不会因此增加重传。
 
+## Web 配置编辑
+
+Web 管理界面支持编辑 STCP/XTCP/SUDP visitor 的 SOCKS5 插件。在 visitor 编辑页面选择
+`Plugin Type = socks5_udp`，外层 `Bind Port` 使用 `-1`，再填写 `SOCKS5 Bind Address`
+和 `SOCKS5 Bind Port`。STCP/XTCP 配对模式还需填写 `UDP Visitor Address`；
+SUDP 自主模式使用非空共享密钥，提供端须配置 `sessionMode = "datagram"`。
+
+SOCKS5 用户名、密码仍配置在提供端。保存其他字段时会保留已有插件和页面未展示的配置字段。
+XUDP 管理 API 及 Web 配置入口尚未适配，XUDP 继续使用本文的配置文件方式管理。
+
 ## 原有配对模式：提供端 frpc
 
 两个代理必须运行在同一个 frpc 实例中。`udpProxyName` 引用 UDP 代理的配置名称；它将 TCP 控制连接创建的会话关联到对应 UDP 插件。
@@ -187,7 +197,8 @@ TCP 模式的 `curl --socks5` 不能用于验证 `UDP ASSOCIATE`。仓库的 `[F
 - 不支持 SOCKS5 UDP 分片，`FRAG != 0` 的包会被丢弃。
 - XUDP 的 MTU 限制作用于完整编码后的数据报。SOCKS5 头和内部会话封装会占用额外空间；超限数据报可能被丢弃，应用应使用较小的 UDP payload。
 - 应用只能在本地 SOCKS5 控制会话存活期间使用 UDP。自主模式不依赖跨端 STCP/XTCP 连接；关闭请求会重试，完全失联时由提供端会话有效期兜底回收。默认有效期为 60 秒，visitor 每 10 秒续期；失联超过有效期后需要重新建立 SOCKS5 会话。
-- 通道建立最多等待 60 秒，涵盖打洞与回退；通道就绪后的 SOCKS5 协商与认证另有 10 秒期限。应用自身的 SOCKS5 连接超时也需要覆盖预期的打洞和回退时间。
+- 通道建立最多等待 60 秒，涵盖打洞与回退；通道就绪后的 SOCKS5 协商与认证另有 10 秒期限。自主模式下应用提前断开会终止等待并释放资源。应用自身的 SOCKS5 连接超时也需要覆盖预期的打洞和回退时间。
+- XUDP 使用客户端 `transport.bandwidthLimit` 时，P2P 收发与中继共用限速配额。低速等待不会拆分数据报，关闭连接会取消未完成的配额等待。
 - 同一 association 的 IPv4、IPv6 流量分别共用一个 UDP 出口 socket，同地址族切换目标端口时保持出口端口。提供端接受近期已访问目标 IP 从其他端口发来的回复，并在 SOCKS5 UDP 头中返回实际来源地址与端口，以支持 TFTP 一类需要切换服务端端口的协议；未访问过的来源 IP 会被丢弃。
 - 每个 UDP 代理最多保留 1024 个 association、4096 条活动目标记录；每个 association 最多保留 64 条活动目标记录，最多使用两个出口 socket。目标记录空闲 2 分钟后回收；某地址族没有活动目标时回收其 socket。TCP association 可以继续保持，后续业务数据会重新建立目标映射，因此长时间闲置后 UDP 出口端口可能变化。
 - 本功能同时需要提供端和访问端的新版本 frpc。frps 不解析插件内部协议。

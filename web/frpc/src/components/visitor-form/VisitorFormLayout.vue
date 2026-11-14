@@ -5,7 +5,6 @@
     </ConfigSection>
     <VisitorConnectionSection v-model="form" :readonly="readonly" />
     <VisitorPluginSection
-      v-if="form.type === 'stcp' || form.type === 'xtcp'"
       v-model="form"
       :readonly="readonly"
     />

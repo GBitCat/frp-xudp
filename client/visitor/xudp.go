@@ -577,7 +577,7 @@ func (sv *XUDPVisitor) dialRelay(generation uint64) (*msg.Conn, uint64, bool) {
 		return nil, 0, false
 	}
 
-	rawConn, err := sv.dialRawVisitorConn(sv.cfg.GetBaseConfig())
+	rawConn, err := sv.dialRawVisitorConnContext(sv.ctx, sv.cfg.GetBaseConfig())
 	if err != nil {
 		xl.Warnf("xudp relay dial error: %v", err)
 		return nil, 0, false

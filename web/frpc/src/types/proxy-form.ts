@@ -1,4 +1,5 @@
 import type { ProxyType, VisitorType } from './constants'
+import type { VisitorDefinition } from './proxy-store'
 
 export interface ProxyFormData {
   // Base fields (ProxyBaseConfig)
@@ -80,8 +81,14 @@ export interface VisitorFormData {
   bindPort: number | undefined
 
   // Visitor plugin
-  pluginType: '' | 'virtual_net'
+  pluginType: string
   pluginDestinationIP: string
+  pluginBindAddr: string
+  pluginBindPort: number | undefined
+  pluginUDPVisitorAddr: string
+
+  // Keep fields not exposed by this editor when replacing a stored visitor.
+  originalConfig?: VisitorDefinition
 
   // XTCP specific (XTCPVisitorConfig)
   protocol: string
@@ -162,6 +169,9 @@ export function createDefaultVisitorForm(): VisitorFormData {
 
     pluginType: '',
     pluginDestinationIP: '',
+    pluginBindAddr: '127.0.0.1',
+    pluginBindPort: undefined,
+    pluginUDPVisitorAddr: '',
 
     protocol: 'quic',
     keepTunnelOpen: false,

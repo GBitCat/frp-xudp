@@ -8,6 +8,7 @@
 package visitor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -56,6 +57,12 @@ func (p *Socks5UDPPlugin) handleDatagram(client net.Conn) {
 	// XUDP hole punching and relay fallback. This is separate from client-side
 	// protocol deadlines, just as it is for the legacy stream visitor.
 	_ = client.SetDeadline(time.Time{})
+	// Keep reading the local control connection while transport setup and
+	// remote authentication are pending. Its EOF must cancel those requests,
+	// even when the peer never answers. The same reader preserves any pipelined
+	// credentials/request bytes for the rest of the SOCKS handshake.
+	control := newDatagramControlConn(client, cancel)
+	defer control.Close()
 	setupCtx, setupCancel := context.WithTimeout(ctx, socks5UDPConnectTimeout)
 	upstream, err := p.pluginCtx.DialDatagram(setupCtx)
 	if err != nil {
@@ -86,7 +93,7 @@ func (p *Socks5UDPPlugin) handleDatagram(client net.Conn) {
 	}
 	var username, password string
 	if method == 2 {
-		username, password, err = readSOCKS5Credentials(client)
+		username, password, err = readSOCKS5Credentials(control)
 		if err != nil {
 			return
 		}
@@ -106,7 +113,7 @@ func (p *Socks5UDPPlugin) handleDatagram(client net.Conn) {
 	if err != nil {
 		return
 	}
-	command, source, err := socks5udp.ReadRequest(client)
+	command, source, err := socks5udp.ReadRequest(control)
 	if err != nil {
 		_ = socks5udp.WriteReply(client, 8, socks5udp.Address{})
 		return
@@ -115,7 +122,68 @@ func (p *Socks5UDPPlugin) handleDatagram(client net.Conn) {
 		_ = socks5udp.WriteReply(client, 7, socks5udp.Address{})
 		return
 	}
-	p.associateDatagram(ctx, client, session, source)
+	p.associateDatagram(ctx, control, session, source)
+}
+
+// datagramControlConn has a single network reader so it can observe disconnects
+// during a remote round trip without racing the SOCKS protocol reader. After
+// the greeting, valid clients send at most 513 authentication bytes and a
+// 262-byte request; UDP ASSOCIATE carries no subsequent TCP application data.
+// Bound queued bytes rather than reads so fragmented handshakes are supported.
+type datagramControlConn struct {
+	net.Conn
+	mu     sync.Mutex
+	ready  *sync.Cond
+	buffer bytes.Buffer
+	err    error
+	done   chan struct{}
+}
+
+func newDatagramControlConn(conn net.Conn, cancel context.CancelFunc) *datagramControlConn {
+	c := &datagramControlConn{Conn: conn, done: make(chan struct{})}
+	c.ready = sync.NewCond(&c.mu)
+	go func() {
+		defer close(c.done)
+		defer cancel()
+		var buf [512]byte
+		for {
+			n, err := conn.Read(buf[:])
+			c.mu.Lock()
+			if c.buffer.Len()+n > 1024 {
+				err = errors.New("SOCKS5 control input exceeds handshake limit")
+			} else if n > 0 {
+				_, _ = c.buffer.Write(buf[:n])
+			}
+			c.err = err
+			c.ready.Broadcast()
+			c.mu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return c
+}
+
+func (c *datagramControlConn) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for c.buffer.Len() == 0 && c.err == nil {
+		c.ready.Wait()
+	}
+	if c.buffer.Len() > 0 {
+		return c.buffer.Read(p)
+	}
+	return 0, c.err
+}
+
+func (c *datagramControlConn) Close() error {
+	err := c.Conn.Close()
+	<-c.done
+	return err
 }
 
 func readSOCKS5Methods(conn io.Reader) ([]byte, error) {
