@@ -12,7 +12,7 @@ version unchanged, update the tag to the tested commit using a lease against the
 previous remote tag object, and dispatch this workflow on that tag:
 
 ```bash
-gh workflow run release.yml --ref v0.72.0 \
+gh workflow run release.yml --repo GBitCat/frp-xudp --ref v0.72.0 \
   -f release_version=0.72.0 -f dry_run=false -f replace_existing=true
 ```
 
