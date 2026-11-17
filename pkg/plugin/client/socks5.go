@@ -20,6 +20,7 @@ import (
 	"context"
 	"io"
 	"log"
+	"net"
 
 	gosocks5 "github.com/armon/go-socks5"
 
@@ -53,7 +54,20 @@ func NewSocks5Plugin(_ PluginContext, options v1.ClientPluginOptions) (p Plugin,
 func (sp *Socks5Plugin) Handle(_ context.Context, connInfo *ConnectionInfo) {
 	defer connInfo.Conn.Close()
 	wrapConn := netpkg.WrapReadWriteCloserToConn(connInfo.Conn, connInfo.UnderlyingConn)
-	_ = sp.Server.ServeConn(wrapConn)
+	_ = sp.Server.ServeConn(&socks5StreamConn{Conn: wrapConn})
+}
+
+// go-socks5 only propagates target EOF when its destination has CloseWrite.
+// FRP work streams may be encrypted, compressed, or multiplexed and do not
+// provide a general half-close operation. Match the regular FRP relay's
+// close-on-EOF behavior after the response has been copied in full.
+// Close the logical stream through its wrappers, never UnderlyingConn.
+type socks5StreamConn struct {
+	net.Conn
+}
+
+func (c *socks5StreamConn) CloseWrite() error {
+	return c.Close()
 }
 
 func (sp *Socks5Plugin) Name() string {
